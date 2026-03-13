@@ -239,28 +239,44 @@ async function searchIndianFoods(query) {
     const results = await sql`
       SELECT 
         name, 
-        calories, 
-        protein, 
-        carbs, 
-        fat, 
-        serving_size,
+        name_regional,
+        calories, protein, carbs, fat,
+        sugar, fiber, sodium, calcium, iron, vitamin_c, folate,
+        serving_size, serving_size_grams,
+        category, is_vegetarian,
         'indian_db' as source
       FROM indian_foods
       WHERE 
-        name ILIKE ${'%' + query + '%'} 
-        OR name_hindi ILIKE ${'%' + query + '%'}
-        OR name_telugu ILIKE ${'%' + query + '%'}
-        OR search_keywords ILIKE ${'%' + query + '%'}
-      LIMIT 5
+        LOWER(name) LIKE LOWER(${'%' + query + '%'}) 
+        OR LOWER(name_regional) LIKE LOWER(${'%' + query + '%'})
+        OR LOWER(search_keywords) LIKE LOWER(${'%' + query + '%'})
+      ORDER BY 
+        CASE 
+          WHEN LOWER(name) = LOWER(${query}) THEN 1
+          WHEN LOWER(name) LIKE LOWER(${query + '%'}) THEN 2
+          ELSE 3
+        END
+      LIMIT 10
     `;
 
     return results.map(r => ({
       name: r.name,
-      calories: Number(r.calories),
-      protein: Number(r.protein),
-      carbs: Number(r.carbs),
-      fat: Number(r.fat),
-      serving_size: r.serving_size,
+      name_regional: r.name_regional,
+      calories: Number(r.calories) || 0,
+      protein: Number(r.protein) || 0,
+      carbs: Number(r.carbs) || 0,
+      fat: Number(r.fat) || 0,
+      sugar: Number(r.sugar) || 0,
+      fiber: Number(r.fiber) || 0,
+      sodium: Number(r.sodium) || 0,
+      calcium: Number(r.calcium) || 0,
+      iron: Number(r.iron) || 0,
+      vitamin_c: Number(r.vitamin_c) || 0,
+      folate: Number(r.folate) || 0,
+      serving_size: r.serving_size || '100g',
+      serving_size_grams: r.serving_size_grams || 100,
+      category: r.category,
+      is_vegetarian: r.is_vegetarian,
       source: 'indian_db'
     }));
   } catch (error) {
