@@ -1,307 +1,14 @@
-require("dotenv").config();
-
-const express = require("express");
-const axios = require("axios");
-const cors = require("cors");
-const sql = require("./api/db");
-
-const app = express();
-app.use(cors());
-app.use(express.json());
-
-const PORT = process.env.PORT || 10000;
+// ============================================
+// CLEANED BACKEND API ROUTES - NO DUPLICATES
+// ============================================
 
 // ================================
-// FATSECRET CONFIG
+// 1. FOOD SEARCH (Combined all sources)
 // ================================
-
-const CLIENT_ID = process.env.FATSECRET_CLIENT_ID;
-const CLIENT_SECRET = process.env.FATSECRET_CLIENT_SECRET;
-
-let accessToken = null;
-let tokenExpiry = 0;
-
-// ================================
-// TRANSLATION FUNCTION
-// ================================
-
-const translate = require("google-translate-api-x");
-
-async function translateToEnglish(text) {
-  try {
-    // Check translation cache first
-    const cached = await sql`
-      SELECT translated_text 
-      FROM translation_cache 
-      WHERE source_text = ${text.toLowerCase()}
-    `;
-
-    if (cached.length > 0) {
-      // Update usage stats
-      await sql`
-        UPDATE translation_cache 
-        SET times_used = times_used + 1, last_used = NOW() 
-        WHERE source_text = ${text.toLowerCase()}
-      `;
-      console.log("Translation from cache:", cached[0].translated_text);
-      return cached[0].translated_text;
-    }
-
-    // First translation
-    let result = await translate(text, { to: "en" });
-    let translated = result.text.toLowerCase();
-
-    console.log("Translated step1:", translated);
-
-    // If it looks like transliteration, try again
-    if (translated === text.toLowerCase()) {
-      const retry = await translate(translated, { from: "te", to: "en" });
-      translated = retry.text.toLowerCase();
-      console.log("Translated step2:", translated);
-    }
-
-    // Cache the translation
-    await sql`
-      INSERT INTO translation_cache (source_text, translated_text, times_used)
-      VALUES (${text.toLowerCase()}, ${translated}, 1)
-      ON CONFLICT (source_text) DO UPDATE
-      SET translated_text = ${translated}, times_used = translation_cache.times_used + 1, last_used = NOW()
-    `;
-
-    return translated;
-  } catch (error) {
-    console.log("Translation error:", error.message);
-    return text.toLowerCase();
-  }
-}
-
-// ================================
-// FATSECRET TOKEN
-// ================================
-
-async function getFatSecretToken() {
-  if (accessToken && Date.now() < tokenExpiry) {
-    return accessToken;
-  }
-
-  try {
-    const response = await axios.post(
-      "https://oauth.fatsecret.com/connect/token",
-      new URLSearchParams({
-        grant_type: "client_credentials",
-        scope: "basic"
-      }),
-      {
-        auth: {
-          username: CLIENT_ID,
-          password: CLIENT_SECRET
-        },
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded"
-        }
-      }
-    );
-
-    accessToken = response.data.access_token;
-    tokenExpiry = Date.now() + response.data.expires_in * 1000;
-
-    console.log("FatSecret token refreshed");
-
-    return accessToken;
-  } catch (error) {
-    console.log("FatSecret token error");
-    return null;
-  }
-}
-
-// ================================
-// FATSECRET SEARCH
-// ================================
-
-async function searchFatSecret(query) {
-  try {
-    const token = await getFatSecretToken();
-    if (!token) return [];
-
-    const response = await axios.post(
-      "https://platform.fatsecret.com/rest/server.api",
-      null,
-      {
-        params: {
-          method: "foods.search.v4",
-          search_expression: query,
-          format: "json"
-        },
-        headers: {
-          Authorization: `Bearer ${token}`
-        }
-      }
-    );
-
-    const foods = response.data?.foods_search?.results?.food || [];
-    const list = Array.isArray(foods) ? foods : [foods];
-
-    return list.slice(0, 5).map(f => {
-      const serving = Array.isArray(f.servings?.serving)
-        ? f.servings.serving[0]
-        : f.servings?.serving;
-
-      return {
-        name: f.food_name,
-        calories: Number(serving?.calories || 0),
-        protein: Number(serving?.protein || 0),
-        carbs: Number(serving?.carbohydrate || 0),
-        fat: Number(serving?.fat || 0),
-        source: "fatsecret"
-      };
-    });
-  } catch (error) {
-    console.log("FatSecret search failed");
-    return [];
-  }
-}
-
-// ================================
-// USDA SEARCH
-// ================================
-
-async function searchUSDA(query) {
-  try {
-    const response = await axios.get(
-      `https://api.nal.usda.gov/fdc/v1/foods/search`,
-      {
-        params: {
-          api_key: process.env.USDA_API_KEY,
-          query: query,
-          pageSize: 5
-        }
-      }
-    );
-
-    return response.data.foods.map(f => {
-      const nutrients = f.foodNutrients;
-      const get = name => nutrients.find(n => n.nutrientName === name)?.value || 0;
-
-      return {
-        name: f.description,
-        calories: get("Energy"),
-        protein: get("Protein"),
-        carbs: get("Carbohydrate, by difference"),
-        fat: get("Total lipid (fat)"),
-        source: "usda"
-      };
-    });
-  } catch {
-    console.log("USDA search failed");
-    return [];
-  }
-}
-
-// ================================
-// OPEN FOOD FACTS SEARCH
-// ================================
-
-async function searchOpenFoodFacts(query) {
-  try {
-    const response = await axios.get(
-      `https://world.openfoodfacts.org/cgi/search.pl`,
-      {
-        params: {
-          search_terms: query,
-          search_simple: 1,
-          action: "process",
-          json: 1,
-          page_size: 5
-        }
-      }
-    );
-
-    return response.data.products.map(p => ({
-      name: p.product_name,
-      calories: p.nutriments?.["energy-kcal_100g"] || 0,
-      protein: p.nutriments?.proteins_100g || 0,
-      carbs: p.nutriments?.carbohydrates_100g || 0,
-      fat: p.nutriments?.fat_100g || 0,
-      source: "openfoodfacts"
-    }));
-  } catch {
-    console.log("OpenFoodFacts search failed");
-    return [];
-  }
-}
-
-// ================================
-// SEARCH INDIAN FOODS DATABASE
-// ================================
-
-async function searchIndianFoods(query) {
-  try {
-    // normalize user query
-    const q = query.trim().toLowerCase();
-
-    const results = await sql`
-      SELECT 
-        name, 
-        name_regional,
-        calories, protein, carbs, fat,
-        sugar, fiber, sodium, calcium, iron, vitamin_c, folate,
-        serving_size, serving_size_grams,
-        category, is_vegetarian,
-        'indian_db' as source
-      FROM indian_foods
-      WHERE 
-        LOWER(name) LIKE LOWER(${q + '%'})
-        OR LOWER(name_regional) LIKE LOWER(${q + '%'})
-        OR LOWER(search_keywords) ~* ('\\m' || ${q} || '\\M')
-      ORDER BY 
-        CASE 
-          WHEN LOWER(name) = LOWER(${q}) THEN 1
-          WHEN LOWER(name) LIKE LOWER(${q + '%'}) THEN 2
-          WHEN LOWER(name_regional) LIKE LOWER(${q + '%'}) THEN 3
-          WHEN LOWER(search_keywords) ~* ('\\m' || ${q} || '\\M') THEN 4
-          ELSE 5
-        END
-      LIMIT 10
-    `;
-
-    return results.map(r => ({
-      name: r.name,
-      name_regional: r.name_regional,
-      calories: Number(r.calories) || 0,
-      protein: Number(r.protein) || 0,
-      carbs: Number(r.carbs) || 0,
-      fat: Number(r.fat) || 0,
-      sugar: Number(r.sugar) || 0,
-      fiber: Number(r.fiber) || 0,
-      sodium: Number(r.sodium) || 0,
-      calcium: Number(r.calcium) || 0,
-      iron: Number(r.iron) || 0,
-      vitamin_c: Number(r.vitamin_c) || 0,
-      folate: Number(r.folate) || 0,
-      serving_size: r.serving_size || '100g',
-      serving_size_grams: r.serving_size_grams || 100,
-      category: r.category,
-      is_vegetarian: r.is_vegetarian,
-      source: 'indian_db'
-    }));
-
-  } catch (error) {
-    console.log("Indian foods search failed:", error.message);
-    return [];
-  }
-}
-
-// ================================
-// MAIN FOOD SEARCH ROUTE
-// ================================
-
 app.get("/api/food/search", async (req, res) => {
   try {
     let query = req.query.q;
-
-    if (!query) {
-      return res.status(400).json({ error: "query required" });
-    }
+    if (!query) return res.status(400).json({ error: "query required" });
 
     console.log("User search:", query);
 
@@ -314,7 +21,6 @@ app.get("/api/food/search", async (req, res) => {
     `;
 
     if (learned.length > 0) {
-      console.log("Using learned search result");
       await sql`
         UPDATE search_intelligence 
         SET times_selected = times_selected + 1, last_searched_at = NOW()
@@ -330,27 +36,15 @@ app.get("/api/food/search", async (req, res) => {
       }]);
     }
 
-    // Translate query
+    // Translate query if needed
     query = await translateToEnglish(query);
     console.log("Searching for:", query);
 
-    // PRIORITY 1: Search Indian foods database
+    // Search in order: Indian DB → FatSecret → USDA → OpenFoodFacts
     let results = await searchIndianFoods(query);
-
-    // PRIORITY 2: FatSecret
-    if (results.length === 0) {
-      results = await searchFatSecret(query);
-    }
-
-    // PRIORITY 3: USDA
-    if (results.length === 0) {
-      results = await searchUSDA(query);
-    }
-
-    // PRIORITY 4: OpenFoodFacts
-    if (results.length === 0) {
-      results = await searchOpenFoodFacts(query);
-    }
+    if (results.length === 0) results = await searchFatSecret(query);
+    if (results.length === 0) results = await searchUSDA(query);
+    if (results.length === 0) results = await searchOpenFoodFacts(query);
 
     res.json(results);
   } catch (error) {
@@ -360,12 +54,11 @@ app.get("/api/food/search", async (req, res) => {
 });
 
 // ================================
-// LOG FOOD ENTRY
+// 2. FOOD LOGGING
 // ================================
-
 app.post("/api/food/log", async (req, res) => {
   try {
-    const { userId, foodName, calories, protein, carbs, fat, mealType, servingSize, quantity, foodSource } = req.body;
+    const { userId, foodName, calories, protein, carbs, fat, mealType, quantity, foodSource } = req.body;
 
     if (!userId || !foodName || !calories) {
       return res.status(400).json({ error: "userId, foodName, and calories required" });
@@ -374,10 +67,10 @@ app.post("/api/food/log", async (req, res) => {
     const result = await sql`
       INSERT INTO food_logs (
         user_id, food_name, calories, protein, carbs, fat, 
-        meal_type, serving_size, quantity, food_source, logged_at
+        meal_type, quantity, food_source, logged_at
       ) VALUES (
         ${userId}, ${foodName}, ${calories}, ${protein || 0}, ${carbs || 0}, ${fat || 0},
-        ${mealType || 'snack'}, ${servingSize || '100g'}, ${quantity || 1}, ${foodSource || 'manual'}, NOW()
+        ${mealType || 'snack'}, ${quantity || 1}, ${foodSource || 'manual'}, NOW()
       )
       RETURNING *
     `;
@@ -401,16 +94,11 @@ app.post("/api/food/log", async (req, res) => {
 });
 
 // ================================
-// GET TODAY'S FOOD LOGS
+// 3. GET TODAY'S FOOD LOGS
 // ================================
-
-app.get("/api/food/logs", async (req, res) => {
+app.get("/api/food/logs/:userId", async (req, res) => {
   try {
-    const { userId } = req.query;
-
-    if (!userId) {
-      return res.status(400).json({ error: "userId required" });
-    }
+    const { userId } = req.params;
 
     const logs = await sql`
       SELECT * FROM food_logs
@@ -426,14 +114,10 @@ app.get("/api/food/logs", async (req, res) => {
         COALESCE(SUM(carbs * quantity), 0) as total_carbs,
         COALESCE(SUM(fat * quantity), 0) as total_fat
       FROM food_logs
-      WHERE user_id = ${userId}
-        AND DATE(logged_at) = CURRENT_DATE
+      WHERE user_id = ${userId} AND DATE(logged_at) = CURRENT_DATE
     `;
 
-    res.json({
-      logs,
-      totals: totals[0]
-    });
+    res.json({ logs, totals: totals[0] });
   } catch (error) {
     console.log("Get food logs error:", error.message);
     res.status(500).json({ error: "Failed to get food logs" });
@@ -441,27 +125,21 @@ app.get("/api/food/logs", async (req, res) => {
 });
 
 // ================================
-// GET ALL EXERCISES
+// 4. EXERCISES ENDPOINT
 // ================================
-
 app.get("/api/exercises", async (req, res) => {
   try {
-    const { bodyPart, equipment, difficulty } = req.query;
+    const { bodyPart, equipment, difficulty, limit = 100 } = req.query;
 
     let query = sql`SELECT * FROM exercises WHERE 1=1`;
 
-    if (bodyPart) {
-      query = sql`SELECT * FROM exercises WHERE body_part = ${bodyPart}`;
-    } else if (equipment) {
-      query = sql`SELECT * FROM exercises WHERE equipment = ${equipment}`;
-    } else if (difficulty) {
-      query = sql`SELECT * FROM exercises WHERE difficulty = ${difficulty}`;
-    } else {
-      query = sql`SELECT * FROM exercises ORDER BY body_part, name LIMIT 100`;
-    }
+    if (bodyPart) query = sql`${query} AND body_part = ${bodyPart}`;
+    if (equipment) query = sql`${query} AND equipment = ${equipment}`;
+    if (difficulty) query = sql`${query} AND difficulty = ${difficulty}`;
+
+    query = sql`${query} ORDER BY body_part, name LIMIT ${limit}`;
 
     const exercises = await query;
-
     res.json(exercises);
   } catch (error) {
     console.log("Get exercises error:", error.message);
@@ -470,24 +148,18 @@ app.get("/api/exercises", async (req, res) => {
 });
 
 // ================================
-// GET SINGLE EXERCISE (with auto YouTube fetch)
+// 5. SINGLE EXERCISE WITH YOUTUBE
 // ================================
-
 app.get("/api/exercises/:id", async (req, res) => {
   try {
     const { id } = req.params;
 
-    const exercise = await sql`
-      SELECT * FROM exercises WHERE id = ${id}
-    `;
-
-    if (exercise.length === 0) {
-      return res.status(404).json({ error: "Exercise not found" });
-    }
+    const exercise = await sql`SELECT * FROM exercises WHERE id = ${id}`;
+    if (exercise.length === 0) return res.status(404).json({ error: "Exercise not found" });
 
     let ex = exercise[0];
 
-    // If no YouTube video ID, search for one
+    // Auto-fetch YouTube video if needed
     if (!ex.youtube_video_id && process.env.YOUTUBE_API_KEY) {
       try {
         const searchQuery = `${ex.name} proper form tutorial`;
@@ -499,31 +171,19 @@ app.get("/api/exercises/:id", async (req, res) => {
               q: searchQuery,
               part: 'snippet',
               type: 'video',
-              maxResults: 1,
-              videoDuration: 'medium' // 4-20 minutes
+              maxResults: 1
             }
           }
         );
 
         if (youtubeResponse.data.items.length > 0) {
           const videoId = youtubeResponse.data.items[0].id.videoId;
-          const videoTitle = youtubeResponse.data.items[0].snippet.title;
-
-          // Save to database
           await sql`
             UPDATE exercises
-            SET 
-              youtube_video_id = ${videoId},
-              video_source = 'auto_search',
-              video_search_query = ${searchQuery},
-              video_title = ${videoTitle},
-              video_fetched_at = NOW()
+            SET youtube_video_id = ${videoId}, video_fetched_at = NOW()
             WHERE id = ${id}
           `;
-
           ex.youtube_video_id = videoId;
-          ex.video_title = videoTitle;
-          console.log(`Auto-fetched video for ${ex.name}: ${videoId}`);
         }
       } catch (ytError) {
         console.log("YouTube search failed:", ytError.message);
@@ -531,11 +191,7 @@ app.get("/api/exercises/:id", async (req, res) => {
     }
 
     // Increment view count
-    await sql`
-      UPDATE exercises
-      SET video_view_count = video_view_count + 1
-      WHERE id = ${id}
-    `;
+    await sql`UPDATE exercises SET view_count = view_count + 1 WHERE id = ${id}`;
 
     res.json(ex);
   } catch (error) {
@@ -545,9 +201,8 @@ app.get("/api/exercises/:id", async (req, res) => {
 });
 
 // ================================
-// LOG WORKOUT
+// 6. LOG WORKOUT
 // ================================
-
 app.post("/api/workouts", async (req, res) => {
   try {
     const { userId, exerciseId, exerciseName, sets, durationMinutes, notes } = req.body;
@@ -556,38 +211,8 @@ app.post("/api/workouts", async (req, res) => {
       return res.status(400).json({ error: "userId, exerciseId, and sets required" });
     }
 
-    // Get exercise MET value
-    const exercise = await sql`
-      SELECT met_value FROM exercises WHERE id = ${exerciseId}
-    `;
-
-    const metValue = exercise[0]?.met_value || 6.0;
-
-    // Get user profile for calorie calculation
-    const profile = await sql`
-      SELECT current_weight, age, height, gender 
-      FROM user_profiles 
-      WHERE user_id = ${userId}
-    `;
-
-    // Calculate calories burned using MET formula
-    let caloriesBurned = 0;
-    if (profile.length > 0) {
-      const { current_weight, age, height, gender } = profile[0];
-
-      // Mifflin-St Jeor BMR
-      const bmr = gender === 'male'
-        ? (10 * current_weight) + (6.25 * height) - (5 * age) + 5
-        : (10 * current_weight) + (6.25 * height) - (5 * age) - 161;
-
-      const bmrPerMinute = bmr / 1440;
-      caloriesBurned = Math.round(metValue * bmrPerMinute * durationMinutes);
-    }
-
-    // Calculate total volume and reps
-    let totalVolume = 0;
-    let totalReps = 0;
-
+    // Calculate totals
+    let totalVolume = 0, totalReps = 0;
     sets.forEach(set => {
       totalReps += set.reps || 0;
       totalVolume += (set.reps || 0) * (set.weight || 0);
@@ -596,10 +221,10 @@ app.post("/api/workouts", async (req, res) => {
     const result = await sql`
       INSERT INTO workouts (
         user_id, exercise_id, exercise_name, sets, 
-        duration_minutes, calories_burned, total_volume, total_reps, notes, completed_at
+        duration_minutes, total_volume, total_reps, notes, completed_at
       ) VALUES (
         ${userId}, ${exerciseId}, ${exerciseName}, ${JSON.stringify(sets)},
-        ${durationMinutes || 0}, ${caloriesBurned}, ${totalVolume}, ${totalReps}, ${notes || ''}, NOW()
+        ${durationMinutes || 0}, ${totalVolume}, ${totalReps}, ${notes || ''}, NOW()
       )
       RETURNING *
     `;
@@ -612,24 +237,22 @@ app.post("/api/workouts", async (req, res) => {
 });
 
 // ================================
-// GET WORKOUT HISTORY
+// 7. GET WORKOUT HISTORY
 // ================================
-
-app.get("/api/workouts", async (req, res) => {
+app.get("/api/workouts/:userId", async (req, res) => {
   try {
-    const { userId, limit = 50 } = req.query;
+    const { userId } = req.params;
+    const { limit = 50, days } = req.query;
 
-    if (!userId) {
-      return res.status(400).json({ error: "userId required" });
+    let query = sql`SELECT * FROM workouts WHERE user_id = ${userId}`;
+
+    if (days) {
+      query = sql`${query} AND completed_at >= NOW() - INTERVAL '${days} days'`;
     }
 
-    const workouts = await sql`
-      SELECT * FROM workouts
-      WHERE user_id = ${userId}
-      ORDER BY completed_at DESC
-      LIMIT ${limit}
-    `;
+    query = sql`${query} ORDER BY completed_at DESC LIMIT ${limit}`;
 
+    const workouts = await query;
     res.json(workouts);
   } catch (error) {
     console.log("Get workouts error:", error.message);
@@ -638,27 +261,61 @@ app.get("/api/workouts", async (req, res) => {
 });
 
 // ================================
-// LOG WEIGHT
+// 8. WATER TRACKING
 // ================================
-
-app.post("/api/weight", async (req, res) => {
+app.post("/api/water", async (req, res) => {
   try {
-    const { userId, weight } = req.body;
-
-    if (!userId || !weight) {
-      return res.status(400).json({ error: "userId and weight required" });
-    }
+    const { userId, amountMl } = req.body;
+    if (!userId || !amountMl) return res.status(400).json({ error: "userId and amountMl required" });
 
     const result = await sql`
-      INSERT INTO weight_history (user_id, weight, recorded_at)
-      VALUES (${userId}, ${weight}, NOW())
+      INSERT INTO water_logs (user_id, amount_ml, logged_at)
+      VALUES (${userId}, ${amountMl}, NOW())
+      RETURNING *
+    `;
+    res.json(result[0]);
+  } catch (error) {
+    console.log("Log water error:", error.message);
+    res.status(500).json({ error: "Failed to log water" });
+  }
+});
+
+// ================================
+// 9. GET TODAY'S WATER
+// ================================
+app.get("/api/water/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    const result = await sql`
+      SELECT COALESCE(SUM(amount_ml), 0) as total_ml
+      FROM water_logs
+      WHERE user_id = ${userId} AND DATE(logged_at) = CURRENT_DATE
+    `;
+
+    res.json({ total_ml: Number(result[0].total_ml) });
+  } catch (error) {
+    console.log("Get water error:", error.message);
+    res.status(500).json({ error: "Failed to get water intake" });
+  }
+});
+
+// ================================
+// 10. WEIGHT TRACKING
+// ================================
+app.post("/api/weight", async (req, res) => {
+  try {
+    const { userId, weight, notes } = req.body;
+    if (!userId || !weight) return res.status(400).json({ error: "userId and weight required" });
+
+    const result = await sql`
+      INSERT INTO weight_history (user_id, weight, notes, logged_at)
+      VALUES (${userId}, ${weight}, ${notes || ''}, NOW())
       RETURNING *
     `;
 
-    // Update current weight in profile
     await sql`
-      UPDATE user_profiles
-      SET current_weight = ${weight}, updated_at = NOW()
+      UPDATE user_profiles SET current_weight = ${weight}, updated_at = NOW()
       WHERE user_id = ${userId}
     `;
 
@@ -670,22 +327,17 @@ app.post("/api/weight", async (req, res) => {
 });
 
 // ================================
-// GET WEIGHT HISTORY
+// 11. GET WEIGHT HISTORY
 // ================================
-
-app.get("/api/weight/history", async (req, res) => {
+app.get("/api/weight/:userId", async (req, res) => {
   try {
-    const { userId, days = 30 } = req.query;
-
-    if (!userId) {
-      return res.status(400).json({ error: "userId required" });
-    }
+    const { userId } = req.params;
+    const { days = 30 } = req.query;
 
     const history = await sql`
       SELECT * FROM weight_history
-      WHERE user_id = ${userId}
-        AND recorded_at >= NOW() - INTERVAL '${days} days'
-      ORDER BY recorded_at ASC
+      WHERE user_id = ${userId} AND logged_at >= NOW() - INTERVAL '${days} days'
+      ORDER BY logged_at ASC
     `;
 
     res.json(history);
@@ -696,234 +348,63 @@ app.get("/api/weight/history", async (req, res) => {
 });
 
 // ================================
-// LOG WATER
+// 12. USER PROFILE (SINGLE ROUTE)
 // ================================
-
-app.post("/api/water", async (req, res) => {
-  try {
-    const { userId, amountMl } = req.body;
-
-    if (!userId || !amountMl) {
-      return res.status(400).json({ error: "userId and amountMl required" });
-    }
-
-    const result = await sql`
-      INSERT INTO water_logs (user_id, amount_ml, logged_at)
-      VALUES (${userId}, ${amountMl}, NOW())
-      RETURNING *
-    `;
-
-    res.json(result[0]);
-  } catch (error) {
-    console.log("Log water error:", error.message);
-    res.status(500).json({ error: "Failed to log water" });
-  }
-});
-
-// ================================
-// GET TODAY'S WATER INTAKE
-// ================================
-
-app.get("/api/water/today", async (req, res) => {
-  try {
-    const { userId } = req.query;
-
-    if (!userId) {
-      return res.status(400).json({ error: "userId required" });
-    }
-
-    const result = await sql`
-      SELECT COALESCE(SUM(amount_ml), 0) as total_ml
-      FROM water_logs
-      WHERE user_id = ${userId}
-        AND DATE(logged_at) = CURRENT_DATE
-    `;
-
-    res.json({ total_ml: Number(result[0].total_ml) });
-  } catch (error) {
-    console.log("Get water intake error:", error.message);
-    res.status(500).json({ error: "Failed to get water intake" });
-  }
-});
-
-// ================================
-// DASHBOARD STATS
-// ================================
-
-app.get("/api/dashboard", async (req, res) => {
-  try {
-    const { userId } = req.query;
-
-    if (!userId) {
-      return res.status(400).json({ error: "userId required" });
-    }
-
-    // Get today's totals
-    const foodTotals = await sql`
-      SELECT 
-        COALESCE(SUM(calories * quantity), 0) as calories,
-        COALESCE(SUM(protein * quantity), 0) as protein,
-        COALESCE(SUM(carbs * quantity), 0) as carbs,
-        COALESCE(SUM(fat * quantity), 0) as fat
-      FROM food_logs
-      WHERE user_id = ${userId} AND DATE(logged_at) = CURRENT_DATE
-    `;
-
-    const workoutTotals = await sql`
-      SELECT 
-        COALESCE(SUM(calories_burned), 0) as calories_burned,
-        COALESCE(SUM(duration_minutes), 0) as duration_minutes,
-        COUNT(*) as workout_count
-      FROM workouts
-      WHERE user_id = ${userId} AND DATE(completed_at) = CURRENT_DATE
-    `;
-
-    const waterTotal = await sql`
-      SELECT COALESCE(SUM(amount_ml), 0) as total_ml
-      FROM water_logs
-      WHERE user_id = ${userId} AND DATE(logged_at) = CURRENT_DATE
-    `;
-
-    const profile = await sql`
-      SELECT * FROM user_profiles WHERE user_id = ${userId}
-    `;
-
-    res.json({
-      food: foodTotals[0],
-      workouts: workoutTotals[0],
-      water: waterTotal[0],
-      profile: profile[0] || {},
-      net_calories: Number(foodTotals[0].calories) - Number(workoutTotals[0].calories_burned)
-    });
-  } catch (error) {
-    console.log("Dashboard error:", error.message);
-    res.status(500).json({ error: "Failed to get dashboard data" });
-  }
-});
-
-// ================================
-// USER PROFILE ENDPOINTS
-// ================================
-
-// Create/Update User Profile (Onboarding)
-app.post("/api/profile/onboarding", async (req, res) => {
+app.post("/api/profile", async (req, res) => {
   try {
     const {
-      userId,
-      gender,
-      age,
-      height,
-      currentWeight,
-      targetWeight,
-      goalDeadline,
-      activityLevel,
-      workoutDaysPerWeek,
-      restDays,
-      cheatDay,
-      preferredWorkoutTime
+      userId, name, age, weight, height, gender,
+      targetWeight, activityLevel, workoutDays, dailyCalorieGoal
     } = req.body;
 
-    if (!userId) {
-      return res.status(400).json({ error: "userId required" });
-    }
+    if (!userId || !name) return res.status(400).json({ error: "userId and name required" });
 
-    // Calculate daily calorie target using Mifflin-St Jeor
+    // Calculate goals
     const bmr = gender === 'male'
-      ? (10 * currentWeight) + (6.25 * height) - (5 * age) + 5
-      : (10 * currentWeight) + (6.25 * height) - (5 * age) - 161;
+      ? (10 * weight) + (6.25 * height) - (5 * age) + 5
+      : (10 * weight) + (6.25 * height) - (5 * age) - 161;
 
-    // Activity multipliers
-    const activityMultipliers = {
-      'sedentary': 1.2,
-      'lightly_active': 1.375,
-      'moderately_active': 1.55,
-      'very_active': 1.725,
-      'extremely_active': 1.9
-    };
-
+    const activityMultipliers = { 'sedentary': 1.2, 'light': 1.375, 'moderate': 1.55, 'active': 1.725, 'very_active': 1.9 };
     const tdee = Math.round(bmr * (activityMultipliers[activityLevel] || 1.2));
 
-    // Calculate weekly weight loss goal
-    const daysDiff = Math.ceil((new Date(goalDeadline) - new Date()) / (1000 * 60 * 60 * 24));
-    const weeksDiff = daysDiff / 7;
-    const totalWeightChange = targetWeight - currentWeight;
-    const weeklyWeightLossGoal = totalWeightChange / weeksDiff;
-
-    // Calculate daily calorie target (7700 cal = 1kg)
-    const dailyDeficit = (weeklyWeightLossGoal * 7700) / 7;
-    const dailyCalorieTarget = Math.round(tdee - dailyDeficit);
-
-    // Calculate macros (protein: 2g/kg, fat: 25%, carbs: remainder)
-    const proteinTarget = currentWeight * 2; // grams
-    const fatTarget = (dailyCalorieTarget * 0.25) / 9; // grams
-    const carbsTarget = (dailyCalorieTarget - (proteinTarget * 4) - (fatTarget * 9)) / 4; // grams
-
-    // Calculate water goal (weight × 0.033L)
-    const dailyWaterGoal = Math.round(currentWeight * 33); // ml
+    const waterGoal = Math.round(weight * 33); // ml
 
     // Upsert profile
     const profile = await sql`
       INSERT INTO user_profiles (
-        user_id, gender, age, height, current_weight,
-        target_weight, goal_deadline, weekly_weight_loss_goal,
-        daily_calorie_target, daily_water_goal,
-        activity_level, workout_days_per_week, rest_days, cheat_day,
-        preferred_workout_time, protein_target, carbs_target, fat_target,
-        onboarding_completed, current_step
+        user_id, name, age, current_weight, height, gender,
+        target_weight, activity_level, workout_days, water_goal,
+        daily_calorie_goal, bmr, tdee, profile_complete, updated_at
       ) VALUES (
-        ${userId}, ${gender}, ${age}, ${height}, ${currentWeight},
-        ${targetWeight}, ${goalDeadline}, ${weeklyWeightLossGoal},
-        ${dailyCalorieTarget}, ${dailyWaterGoal},
-        ${activityLevel}, ${workoutDaysPerWeek}, ${JSON.stringify(restDays)}, ${cheatDay},
-        ${preferredWorkoutTime}, ${proteinTarget}, ${carbsTarget}, ${fatTarget},
-        true, 4
+        ${userId}, ${name}, ${age}, ${weight}, ${height}, ${gender},
+        ${targetWeight}, ${activityLevel}, ${JSON.stringify(workoutDays || [])}, ${waterGoal},
+        ${dailyCalorieGoal || tdee}, ${bmr}, ${tdee}, true, NOW()
       )
       ON CONFLICT (user_id) DO UPDATE SET
-        gender = ${gender},
-        age = ${age},
-        height = ${height},
-        current_weight = ${currentWeight},
-        target_weight = ${targetWeight},
-        goal_deadline = ${goalDeadline},
-        weekly_weight_loss_goal = ${weeklyWeightLossGoal},
-        daily_calorie_target = ${dailyCalorieTarget},
-        daily_water_goal = ${dailyWaterGoal},
-        activity_level = ${activityLevel},
-        workout_days_per_week = ${workoutDaysPerWeek},
-        rest_days = ${JSON.stringify(restDays)},
-        cheat_day = ${cheatDay},
-        preferred_workout_time = ${preferredWorkoutTime},
-        protein_target = ${proteinTarget},
-        carbs_target = ${carbsTarget},
-        fat_target = ${fatTarget},
-        onboarding_completed = true,
-        updated_at = NOW()
+        name = ${name}, age = ${age}, current_weight = ${weight},
+        height = ${height}, gender = ${gender}, target_weight = ${targetWeight},
+        activity_level = ${activityLevel}, workout_days = ${JSON.stringify(workoutDays || [])},
+        water_goal = ${waterGoal}, daily_calorie_goal = ${dailyCalorieGoal || tdee},
+        bmr = ${bmr}, tdee = ${tdee}, updated_at = NOW()
       RETURNING *
     `;
 
     res.json(profile[0]);
   } catch (error) {
-    console.log("Onboarding error:", error.message);
+    console.log("Profile error:", error.message);
     res.status(500).json({ error: "Failed to save profile" });
   }
 });
 
-// Get User Profile
-app.get("/api/profile", async (req, res) => {
+// ================================
+// 13. GET USER PROFILE
+// ================================
+app.get("/api/profile/:userId", async (req, res) => {
   try {
-    const { userId } = req.query;
+    const { userId } = req.params;
 
-    if (!userId) {
-      return res.status(400).json({ error: "userId required" });
-    }
-
-    const profile = await sql`
-      SELECT * FROM user_profiles WHERE user_id = ${userId}
-    `;
-
-    if (profile.length === 0) {
-      return res.status(404).json({ error: "Profile not found" });
-    }
+    const profile = await sql`SELECT * FROM user_profiles WHERE user_id = ${userId}`;
+    if (profile.length === 0) return res.status(404).json({ error: "Profile not found" });
 
     res.json(profile[0]);
   } catch (error) {
@@ -933,40 +414,84 @@ app.get("/api/profile", async (req, res) => {
 });
 
 // ================================
-// HEALTH CHECK
+// 14. DASHBOARD (SINGLE ROUTE)
 // ================================
+app.get("/api/dashboard/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
 
+    // Get profile
+    const profile = await sql`SELECT * FROM user_profiles WHERE user_id = ${userId}`;
+    if (profile.length === 0) return res.status(404).json({ error: "Profile not found" });
+
+    // Get today's food
+    const food = await sql`
+      SELECT 
+        COALESCE(SUM(calories * quantity), 0) as calories,
+        COALESCE(SUM(protein * quantity), 0) as protein,
+        COALESCE(SUM(carbs * quantity), 0) as carbs,
+        COALESCE(SUM(fat * quantity), 0) as fat
+      FROM food_logs
+      WHERE user_id = ${userId} AND DATE(logged_at) = CURRENT_DATE
+    `;
+
+    // Get today's workouts
+    const workout = await sql`
+      SELECT 
+        COUNT(*) as count,
+        COALESCE(SUM(duration_minutes), 0) as duration,
+        COALESCE(SUM(total_volume), 0) as total_volume
+      FROM workouts
+      WHERE user_id = ${userId} AND DATE(completed_at) = CURRENT_DATE
+    `;
+
+    // Get today's water
+    const water = await sql`
+      SELECT COALESCE(SUM(amount_ml), 0) as total_ml
+      FROM water_logs
+      WHERE user_id = ${userId} AND DATE(logged_at) = CURRENT_DATE
+    `;
+
+    // Get weekly data for charts
+    const weekly = await sql`
+      SELECT 
+        DATE(logged_at) as date,
+        COALESCE(SUM(calories * quantity), 0) as calories
+      FROM food_logs
+      WHERE user_id = ${userId} AND logged_at >= NOW() - INTERVAL '7 days'
+      GROUP BY DATE(logged_at)
+      ORDER BY date
+    `;
+
+    res.json({
+      profile: profile[0],
+      today: {
+        food: food[0],
+        workout: workout[0],
+        water: { total_ml: Number(water[0].total_ml), goal: profile[0].water_goal },
+        net_calories: Number(food[0].calories)
+      },
+      weekly: weekly
+    });
+  } catch (error) {
+    console.log("Dashboard error:", error.message);
+    res.status(500).json({ error: "Failed to get dashboard data" });
+  }
+});
+
+// ================================
+// 15. HEALTH CHECK
+// ================================
 app.get("/", (req, res) => {
   res.json({
     status: "Fitness App API Running",
     version: "2.0.0",
     environment: process.env.NODE_ENV || "development",
-    features: {
-      exercises: "300+ in database",
-      food_search: "Indian DB + 3 APIs",
-      calorie_calc: "MET-based (no external API)",
-      videos: "Auto-fetch from YouTube"
-    },
     endpoints: {
       food: "/api/food/search?q=banana",
       exercises: "/api/exercises?bodyPart=chest",
-      dashboard: "/api/dashboard?userId=xxx",
-      profile: "/api/profile?userId=xxx"
+      dashboard: "/api/dashboard/user123",
+      profile: "/api/profile/user123"
     }
   });
 });
-
-// ================================
-// START SERVER
-// ================================
-
-app.listen(PORT, () => {
-  console.log("================================");
-  console.log("Fitness App Backend Running");
-  console.log("Port:", PORT);
-  console.log("Environment:", process.env.NODE_ENV || "development");
-  console.log("================================");
-});
-
-// Export for Vercel serverless
-module.exports = app;
