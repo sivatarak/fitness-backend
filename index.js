@@ -1,3 +1,30 @@
+require("dotenv").config();
+
+const express = require("express");
+const axios = require("axios");
+const cors = require("cors");
+const sql = require("./api/db");
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+const PORT = process.env.PORT || 10000;
+
+// ================================
+// FATSECRET CONFIG
+// ================================
+
+const CLIENT_ID = process.env.FATSECRET_CLIENT_ID;
+const CLIENT_SECRET = process.env.FATSECRET_CLIENT_SECRET;
+
+let accessToken = null;
+let tokenExpiry = 0;
+
+// ================================
+// TRANSLATION FUNCTION
+// ================================
+
 // ============================================
 // CLEANED BACKEND API ROUTES - NO DUPLICATES
 // ============================================
@@ -495,3 +522,18 @@ app.get("/", (req, res) => {
     }
   });
 });
+
+// ================================
+// START SERVER
+// ================================
+
+app.listen(PORT, () => {
+  console.log("================================");
+  console.log("Fitness App Backend Running");
+  console.log("Port:", PORT);
+  console.log("Environment:", process.env.NODE_ENV || "development");
+  console.log("================================");
+});
+
+// Export for Vercel serverless
+module.exports = app;
