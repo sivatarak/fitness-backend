@@ -377,52 +377,111 @@ app.get("/api/weight/:userId", async (req, res) => {
 // ================================
 // 12. USER PROFILE (SINGLE ROUTE)
 // ================================
+// 12. USER PROFILE (SINGLE ROUTE)
+// ================================
 app.post("/api/profile", async (req, res) => {
   try {
     const {
       userId, name, age, weight, height, gender,
-      targetWeight, activityLevel, workoutDays, dailyCalorieGoal
+      targetWeight, timeline, weeklyWeightLoss, dailyDeficit,
+      workoutDaysPerWeek, workoutDays, restDays,
+      waterGoal, bmr, tdee, dailyCalorieGoal,
+      activityLevel, profileComplete, setupDate
     } = req.body;
 
-    if (!userId || !name) return res.status(400).json({ error: "userId and name required" });
+    console.log('📝 Saving profile for:', userId, name);
 
-    // Calculate goals
-    const bmr = gender === 'male'
+    if (!userId || !name) {
+      return res.status(400).json({ error: "userId and name required" });
+    }
+
+    // Create user if doesn't exist
+    try {
+      await sql`
+        INSERT INTO users (id, email, name)
+        VALUES (${userId}, ${userId + '@betofit.com'}, ${name})
+        ON CONFLICT (id) DO NOTHING
+      `;
+    } catch (err) {
+      console.log('User insert error (may already exist):', err.message);
+    }
+
+    // Calculate if not provided
+    const calculatedBmr = bmr || (gender === 'male'
       ? (10 * weight) + (6.25 * height) - (5 * age) + 5
-      : (10 * weight) + (6.25 * height) - (5 * age) - 161;
+      : (10 * weight) + (6.25 * height) - (5 * age) - 161);
 
-    const activityMultipliers = { 'sedentary': 1.2, 'light': 1.375, 'moderate': 1.55, 'active': 1.725, 'very_active': 1.9 };
-    const tdee = Math.round(bmr * (activityMultipliers[activityLevel] || 1.2));
-
-    const waterGoal = Math.round(weight * 33); // ml
+    const activityMultipliers = {
+      'sedentary': 1.2, 'light': 1.375, 'moderate': 1.55,
+      'active': 1.725, 'very_active': 1.9
+    };
+    const calculatedTdee = tdee || Math.round(calculatedBmr * (activityMultipliers[activityLevel] || 1.55));
+    const calculatedWaterGoal = waterGoal || Math.round(weight * 33);
 
     // Upsert profile
     const profile = await sql`
       INSERT INTO user_profiles (
-        user_id, name, age, current_weight, height, gender,
-        target_weight, activity_level, workout_days, water_goal,
-        daily_calorie_goal, bmr, tdee, profile_complete, updated_at
+        user_id, name, age, weight, height, gender,
+        target_weight, timeline, weekly_weight_loss, daily_deficit,
+        workout_days_per_week, workout_days, rest_days,
+        water_goal, bmr, tdee, daily_calorie_goal,
+        activity_level, profile_complete, setup_date, updated_at
       ) VALUES (
-        ${userId}, ${name}, ${age}, ${weight}, ${height}, ${gender},
-        ${targetWeight}, ${activityLevel}, ${JSON.stringify(workoutDays || [])}, ${waterGoal},
-        ${dailyCalorieGoal || tdee}, ${bmr}, ${tdee}, true, NOW()
+        ${userId}, 
+        ${name}, 
+        ${age}, 
+        ${weight}, 
+        ${height}, 
+        ${gender},
+        ${targetWeight || weight - 10}, 
+        ${timeline || 12}, 
+        ${weeklyWeightLoss || 0.5}, 
+        ${dailyDeficit || 500},
+        ${workoutDaysPerWeek || 5}, 
+        ${JSON.stringify(workoutDays || [])}, 
+        ${JSON.stringify(restDays || [])},
+        ${calculatedWaterGoal}, 
+        ${Math.round(calculatedBmr)}, 
+        ${calculatedTdee}, 
+        ${dailyCalorieGoal || calculatedTdee},
+        ${activityLevel || 1.55},
+        ${profileComplete !== undefined ? profileComplete : true},
+        ${setupDate || new Date().toISOString()},
+        NOW()
       )
       ON CONFLICT (user_id) DO UPDATE SET
-        name = ${name}, age = ${age}, current_weight = ${weight},
-        height = ${height}, gender = ${gender}, target_weight = ${targetWeight},
-        activity_level = ${activityLevel}, workout_days = ${JSON.stringify(workoutDays || [])},
-        water_goal = ${waterGoal}, daily_calorie_goal = ${dailyCalorieGoal || tdee},
-        bmr = ${bmr}, tdee = ${tdee}, updated_at = NOW()
+        name = ${name},
+        age = ${age},
+        weight = ${weight},
+        height = ${height},
+        gender = ${gender},
+        target_weight = ${targetWeight || weight - 10},
+        timeline = ${timeline || 12},
+        weekly_weight_loss = ${weeklyWeightLoss || 0.5},
+        daily_deficit = ${dailyDeficit || 500},
+        workout_days_per_week = ${workoutDaysPerWeek || 5},
+        workout_days = ${JSON.stringify(workoutDays || [])},
+        rest_days = ${JSON.stringify(restDays || [])},
+        water_goal = ${calculatedWaterGoal},
+        bmr = ${Math.round(calculatedBmr)},
+        tdee = ${calculatedTdee},
+        daily_calorie_goal = ${dailyCalorieGoal || calculatedTdee},
+        activity_level = ${activityLevel || 1.55},
+        profile_complete = ${profileComplete !== undefined ? profileComplete : true},
+        updated_at = NOW()
       RETURNING *
     `;
 
+    console.log('✅ Profile saved successfully');
     res.json(profile[0]);
   } catch (error) {
-    console.log("Profile error:", error.message);
-    res.status(500).json({ error: "Failed to save profile" });
+    console.error("❌ Profile save error:", error);
+    res.status(500).json({
+      error: "Failed to save profile",
+      details: error.message
+    });
   }
 });
-
 // ================================
 // 13. GET USER PROFILE
 // ================================
