@@ -301,6 +301,9 @@ async function searchIndianFoods(query) {
 // ================================
 // 1. FOOD SEARCH (Combined all sources)
 // ================================
+// ================================
+// MAIN FOOD SEARCH ROUTE - MERGE ALL SOURCES
+// ================================
 app.get("/api/food/search", async (req, res) => {
   try {
     let query = req.query.q;
@@ -308,41 +311,64 @@ app.get("/api/food/search", async (req, res) => {
 
     console.log("User search:", query);
 
-    // Check search intelligence first
-    const learned = await sql`
-      SELECT * FROM search_intelligence
-      WHERE original_query = ${query.toLowerCase()}
-      ORDER BY times_selected DESC, confidence_score DESC
-      LIMIT 1
-    `;
-
-    if (learned.length > 0) {
-      await sql`
-        UPDATE search_intelligence 
-        SET times_selected = times_selected + 1, last_searched_at = NOW()
-        WHERE id = ${learned[0].id}
-      `;
-      return res.json([{
-        name: learned[0].selected_result_name,
-        calories: Number(learned[0].calories),
-        protein: Number(learned[0].protein),
-        carbs: Number(learned[0].carbs),
-        fat: Number(learned[0].fat),
-        source: learned[0].food_source
-      }]);
-    }
-
     // Translate query if needed
     query = await translateToEnglish(query);
     console.log("Searching for:", query);
 
-    // Search in order: Indian DB → FatSecret → USDA → OpenFoodFacts
-    let results = await searchIndianFoods(query);
-    if (results.length === 0) results = await searchFatSecret(query);
-    if (results.length === 0) results = await searchUSDA(query);
-    if (results.length === 0) results = await searchOpenFoodFacts(query);
+    // Search ALL sources in parallel for better performance
+    const [fatSecretResults, indianResults, usdaResults, openFoodResults] = await Promise.all([
+      searchFatSecret(query),
+      searchIndianFoods(query),
+      searchUSDA(query),
+      searchOpenFoodFacts(query)
+    ]);
 
-    res.json(results);
+    // Combine all results
+    let allResults = [
+      ...fatSecretResults,
+      ...indianResults,
+      ...usdaResults,
+      ...openFoodResults
+    ];
+
+    // Remove duplicates based on food name (case insensitive)
+    const uniqueResults = [];
+    const seenNames = new Set();
+
+    for (const item of allResults) {
+      const nameKey = item.name.toLowerCase().trim();
+
+      // Skip if we've seen this food name before
+      if (seenNames.has(nameKey)) {
+        continue;
+      }
+
+      // Add source indicator to name for better UX
+      let sourceIndicator = '';
+      if (item.source === 'fatsecret') sourceIndicator = ' (FS)';
+      else if (item.source === 'indian_db') sourceIndicator = ' (IN)';
+      else if (item.source === 'usda') sourceIndicator = ' (US)';
+      else if (item.source === 'openfoodfacts') sourceIndicator = ' (OFF)';
+
+      // Store with source indicator
+      seenNames.add(nameKey);
+      uniqueResults.push({
+        ...item,
+        displayName: item.name + sourceIndicator
+      });
+    }
+
+    // Optional: Sort results by relevance
+    // Prioritize exact matches first
+    uniqueResults.sort((a, b) => {
+      const aExact = a.name.toLowerCase() === query.toLowerCase() ? 0 : 1;
+      const bExact = b.name.toLowerCase() === query.toLowerCase() ? 0 : 1;
+      return aExact - bExact;
+    });
+
+    // Limit to top 20 results
+    res.json(uniqueResults.slice(0, 20));
+
   } catch (error) {
     console.log("Search error:", error.message);
     res.status(500).json({ error: "Food search failed" });
