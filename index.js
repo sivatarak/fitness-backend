@@ -25,6 +25,275 @@ let tokenExpiry = 0;
 // TRANSLATION FUNCTION
 // ================================
 
+const translate = require("google-translate-api-x");
+
+async function translateToEnglish(text) {
+  try {
+    // Check translation cache first
+    const cached = await sql`
+      SELECT translated_text 
+      FROM translation_cache 
+      WHERE source_text = ${text.toLowerCase()}
+    `;
+
+    if (cached.length > 0) {
+      // Update usage stats
+      await sql`
+        UPDATE translation_cache 
+        SET times_used = times_used + 1, last_used = NOW() 
+        WHERE source_text = ${text.toLowerCase()}
+      `;
+      console.log("Translation from cache:", cached[0].translated_text);
+      return cached[0].translated_text;
+    }
+
+    // First translation
+    let result = await translate(text, { to: "en" });
+    let translated = result.text.toLowerCase();
+
+    console.log("Translated step1:", translated);
+
+    // If it looks like transliteration, try again
+    if (translated === text.toLowerCase()) {
+      const retry = await translate(translated, { from: "te", to: "en" });
+      translated = retry.text.toLowerCase();
+      console.log("Translated step2:", translated);
+    }
+
+    // Cache the translation
+    await sql`
+      INSERT INTO translation_cache (source_text, translated_text, times_used)
+      VALUES (${text.toLowerCase()}, ${translated}, 1)
+      ON CONFLICT (source_text) DO UPDATE
+      SET translated_text = ${translated}, times_used = translation_cache.times_used + 1, last_used = NOW()
+    `;
+
+    return translated;
+  } catch (error) {
+    console.log("Translation error:", error.message);
+    return text.toLowerCase();
+  }
+}
+
+// ================================
+// FATSECRET TOKEN
+// ================================
+
+async function getFatSecretToken() {
+  if (accessToken && Date.now() < tokenExpiry) {
+    return accessToken;
+  }
+
+  try {
+    const response = await axios.post(
+      "https://oauth.fatsecret.com/connect/token",
+      new URLSearchParams({
+        grant_type: "client_credentials",
+        scope: "basic"
+      }),
+      {
+        auth: {
+          username: CLIENT_ID,
+          password: CLIENT_SECRET
+        },
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded"
+        }
+      }
+    );
+
+    accessToken = response.data.access_token;
+    tokenExpiry = Date.now() + response.data.expires_in * 1000;
+
+    console.log("FatSecret token refreshed");
+
+    return accessToken;
+  } catch (error) {
+    console.log("FatSecret token error");
+    return null;
+  }
+}
+
+// ================================
+// FATSECRET SEARCH
+// ================================
+
+async function searchFatSecret(query) {
+  try {
+    const token = await getFatSecretToken();
+    if (!token) return [];
+
+    const response = await axios.post(
+      "https://platform.fatsecret.com/rest/server.api",
+      null,
+      {
+        params: {
+          method: "foods.search.v4",
+          search_expression: query,
+          format: "json"
+        },
+        headers: {
+          Authorization: `Bearer ${token}`
+        }
+      }
+    );
+
+    const foods = response.data?.foods_search?.results?.food || [];
+    const list = Array.isArray(foods) ? foods : [foods];
+
+    return list.slice(0, 5).map(f => {
+      const serving = Array.isArray(f.servings?.serving)
+        ? f.servings.serving[0]
+        : f.servings?.serving;
+
+      return {
+        name: f.food_name,
+        calories: Number(serving?.calories || 0),
+        protein: Number(serving?.protein || 0),
+        carbs: Number(serving?.carbohydrate || 0),
+        fat: Number(serving?.fat || 0),
+        source: "fatsecret"
+      };
+    });
+  } catch (error) {
+    console.log("FatSecret search failed");
+    return [];
+  }
+}
+
+// ================================
+// USDA SEARCH
+// ================================
+
+async function searchUSDA(query) {
+  try {
+    const response = await axios.get(
+      `https://api.nal.usda.gov/fdc/v1/foods/search`,
+      {
+        params: {
+          api_key: process.env.USDA_API_KEY,
+          query: query,
+          pageSize: 5
+        }
+      }
+    );
+
+    return response.data.foods.map(f => {
+      const nutrients = f.foodNutrients;
+      const get = name => nutrients.find(n => n.nutrientName === name)?.value || 0;
+
+      return {
+        name: f.description,
+        calories: get("Energy"),
+        protein: get("Protein"),
+        carbs: get("Carbohydrate, by difference"),
+        fat: get("Total lipid (fat)"),
+        source: "usda"
+      };
+    });
+  } catch {
+    console.log("USDA search failed");
+    return [];
+  }
+}
+
+// ================================
+// OPEN FOOD FACTS SEARCH
+// ================================
+
+async function searchOpenFoodFacts(query) {
+  try {
+    const response = await axios.get(
+      `https://world.openfoodfacts.org/cgi/search.pl`,
+      {
+        params: {
+          search_terms: query,
+          search_simple: 1,
+          action: "process",
+          json: 1,
+          page_size: 5
+        }
+      }
+    );
+
+    return response.data.products.map(p => ({
+      name: p.product_name,
+      calories: p.nutriments?.["energy-kcal_100g"] || 0,
+      protein: p.nutriments?.proteins_100g || 0,
+      carbs: p.nutriments?.carbohydrates_100g || 0,
+      fat: p.nutriments?.fat_100g || 0,
+      source: "openfoodfacts"
+    }));
+  } catch {
+    console.log("OpenFoodFacts search failed");
+    return [];
+  }
+}
+
+// ================================
+// SEARCH INDIAN FOODS DATABASE
+// ================================
+
+async function searchIndianFoods(query) {
+  try {
+    // normalize user query
+    const q = query.trim().toLowerCase();
+
+    const results = await sql`
+      SELECT 
+        name, 
+        name_regional,
+        calories, protein, carbs, fat,
+        sugar, fiber, sodium, calcium, iron, vitamin_c, folate,
+        serving_size, serving_size_grams,
+        category, is_vegetarian,
+        'indian_db' as source
+      FROM indian_foods
+      WHERE 
+        LOWER(name) LIKE LOWER(${q + '%'})
+        OR LOWER(name_regional) LIKE LOWER(${q + '%'})
+        OR LOWER(search_keywords) ~* ('\\m' || ${q} || '\\M')
+      ORDER BY 
+        CASE 
+          WHEN LOWER(name) = LOWER(${q}) THEN 1
+          WHEN LOWER(name) LIKE LOWER(${q + '%'}) THEN 2
+          WHEN LOWER(name_regional) LIKE LOWER(${q + '%'}) THEN 3
+          WHEN LOWER(search_keywords) ~* ('\\m' || ${q} || '\\M') THEN 4
+          ELSE 5
+        END
+      LIMIT 10
+    `;
+
+    return results.map(r => ({
+      name: r.name,
+      name_regional: r.name_regional,
+      calories: Number(r.calories) || 0,
+      protein: Number(r.protein) || 0,
+      carbs: Number(r.carbs) || 0,
+      fat: Number(r.fat) || 0,
+      sugar: Number(r.sugar) || 0,
+      fiber: Number(r.fiber) || 0,
+      sodium: Number(r.sodium) || 0,
+      calcium: Number(r.calcium) || 0,
+      iron: Number(r.iron) || 0,
+      vitamin_c: Number(r.vitamin_c) || 0,
+      folate: Number(r.folate) || 0,
+      serving_size: r.serving_size || '100g',
+      serving_size_grams: r.serving_size_grams || 100,
+      category: r.category,
+      is_vegetarian: r.is_vegetarian,
+      source: 'indian_db'
+    }));
+
+  } catch (error) {
+    console.log("Indian foods search failed:", error.message);
+    return [];
+  }
+}
+
+// ================================
+// MAIN FOOD SEARCH ROUTE
+// ================================
 // ============================================
 // CLEANED BACKEND API ROUTES - NO DUPLICATES
 // ============================================
@@ -32,47 +301,6 @@ let tokenExpiry = 0;
 // ================================
 // 1. FOOD SEARCH (Combined all sources)
 // ================================
-
-// ================================
-// TRANSLATE QUERY TO ENGLISH
-// ================================
-
-async function translateToEnglish(query) {
-  try {
-
-    // detect if query already English
-    const englishRegex = /^[a-zA-Z\s]+$/;
-
-    if (englishRegex.test(query)) {
-      return query.toLowerCase();
-    }
-
-    const response = await axios.get(
-      "https://translate.googleapis.com/translate_a/single",
-      {
-        params: {
-          client: "gtx",
-          sl: "auto",
-          tl: "en",
-          dt: "t",
-          q: query
-        }
-      }
-    );
-
-    const translated = response.data[0][0][0];
-
-    console.log("Translated query:", translated);
-
-    return translated.toLowerCase();
-
-  } catch (error) {
-
-    console.log("Translation error:", error.message);
-
-    return query.toLowerCase();
-  }
-}
 app.get("/api/food/search", async (req, res) => {
   try {
     let query = req.query.q;
@@ -418,111 +646,52 @@ app.get("/api/weight/:userId", async (req, res) => {
 // ================================
 // 12. USER PROFILE (SINGLE ROUTE)
 // ================================
-// 12. USER PROFILE (SINGLE ROUTE)
-// ================================
 app.post("/api/profile", async (req, res) => {
   try {
     const {
       userId, name, age, weight, height, gender,
-      targetWeight, timeline, weeklyWeightLoss, dailyDeficit,
-      workoutDaysPerWeek, workoutDays, restDays,
-      waterGoal, bmr, tdee, dailyCalorieGoal,
-      activityLevel, profileComplete, setupDate
+      targetWeight, activityLevel, workoutDays, dailyCalorieGoal
     } = req.body;
 
-    console.log('📝 Saving profile for:', userId, name);
+    if (!userId || !name) return res.status(400).json({ error: "userId and name required" });
 
-    if (!userId || !name) {
-      return res.status(400).json({ error: "userId and name required" });
-    }
-
-    // Create user if doesn't exist
-    try {
-      await sql`
-        INSERT INTO users (id, email, name)
-        VALUES (${userId}, ${userId + '@betofit.com'}, ${name})
-        ON CONFLICT (id) DO NOTHING
-      `;
-    } catch (err) {
-      console.log('User insert error (may already exist):', err.message);
-    }
-
-    // Calculate if not provided
-    const calculatedBmr = bmr || (gender === 'male'
+    // Calculate goals
+    const bmr = gender === 'male'
       ? (10 * weight) + (6.25 * height) - (5 * age) + 5
-      : (10 * weight) + (6.25 * height) - (5 * age) - 161);
+      : (10 * weight) + (6.25 * height) - (5 * age) - 161;
 
-    const activityMultipliers = {
-      'sedentary': 1.2, 'light': 1.375, 'moderate': 1.55,
-      'active': 1.725, 'very_active': 1.9
-    };
-    const calculatedTdee = tdee || Math.round(calculatedBmr * (activityMultipliers[activityLevel] || 1.55));
-    const calculatedWaterGoal = waterGoal || Math.round(weight * 33);
+    const activityMultipliers = { 'sedentary': 1.2, 'light': 1.375, 'moderate': 1.55, 'active': 1.725, 'very_active': 1.9 };
+    const tdee = Math.round(bmr * (activityMultipliers[activityLevel] || 1.2));
+
+    const waterGoal = Math.round(weight * 33); // ml
 
     // Upsert profile
     const profile = await sql`
       INSERT INTO user_profiles (
-        user_id, name, age, weight, height, gender,
-        target_weight, timeline, weekly_weight_loss, daily_deficit,
-        workout_days_per_week, workout_days, rest_days,
-        water_goal, bmr, tdee, daily_calorie_goal,
-        activity_level, profile_complete, setup_date, updated_at
+        user_id, name, age, current_weight, height, gender,
+        target_weight, activity_level, workout_days, water_goal,
+        daily_calorie_goal, bmr, tdee, profile_complete, updated_at
       ) VALUES (
-        ${userId}, 
-        ${name}, 
-        ${age}, 
-        ${weight}, 
-        ${height}, 
-        ${gender},
-        ${targetWeight || weight - 10}, 
-        ${timeline || 12}, 
-        ${weeklyWeightLoss || 0.5}, 
-        ${dailyDeficit || 500},
-        ${workoutDaysPerWeek || 5}, 
-        ${JSON.stringify(workoutDays || [])}, 
-        ${JSON.stringify(restDays || [])},
-        ${calculatedWaterGoal}, 
-        ${Math.round(calculatedBmr)}, 
-        ${calculatedTdee}, 
-        ${dailyCalorieGoal || calculatedTdee},
-        ${activityLevel || 1.55},
-        ${profileComplete !== undefined ? profileComplete : true},
-        ${setupDate || new Date().toISOString()},
-        NOW()
+        ${userId}, ${name}, ${age}, ${weight}, ${height}, ${gender},
+        ${targetWeight}, ${activityLevel}, ${JSON.stringify(workoutDays || [])}, ${waterGoal},
+        ${dailyCalorieGoal || tdee}, ${bmr}, ${tdee}, true, NOW()
       )
       ON CONFLICT (user_id) DO UPDATE SET
-        name = ${name},
-        age = ${age},
-        weight = ${weight},
-        height = ${height},
-        gender = ${gender},
-        target_weight = ${targetWeight || weight - 10},
-        timeline = ${timeline || 12},
-        weekly_weight_loss = ${weeklyWeightLoss || 0.5},
-        daily_deficit = ${dailyDeficit || 500},
-        workout_days_per_week = ${workoutDaysPerWeek || 5},
-        workout_days = ${JSON.stringify(workoutDays || [])},
-        rest_days = ${JSON.stringify(restDays || [])},
-        water_goal = ${calculatedWaterGoal},
-        bmr = ${Math.round(calculatedBmr)},
-        tdee = ${calculatedTdee},
-        daily_calorie_goal = ${dailyCalorieGoal || calculatedTdee},
-        activity_level = ${activityLevel || 1.55},
-        profile_complete = ${profileComplete !== undefined ? profileComplete : true},
-        updated_at = NOW()
+        name = ${name}, age = ${age}, current_weight = ${weight},
+        height = ${height}, gender = ${gender}, target_weight = ${targetWeight},
+        activity_level = ${activityLevel}, workout_days = ${JSON.stringify(workoutDays || [])},
+        water_goal = ${waterGoal}, daily_calorie_goal = ${dailyCalorieGoal || tdee},
+        bmr = ${bmr}, tdee = ${tdee}, updated_at = NOW()
       RETURNING *
     `;
 
-    console.log('✅ Profile saved successfully');
     res.json(profile[0]);
   } catch (error) {
-    console.error("❌ Profile save error:", error);
-    res.status(500).json({
-      error: "Failed to save profile",
-      details: error.message
-    });
+    console.log("Profile error:", error.message);
+    res.status(500).json({ error: "Failed to save profile" });
   }
 });
+
 // ================================
 // 13. GET USER PROFILE
 // ================================
@@ -622,7 +791,6 @@ app.get("/", (req, res) => {
     }
   });
 });
-
 // ================================
 // START SERVER
 // ================================
@@ -637,3 +805,5 @@ app.listen(PORT, () => {
 
 // Export for Vercel serverless
 module.exports = app;
+
+
