@@ -32,6 +32,47 @@ let tokenExpiry = 0;
 // ================================
 // 1. FOOD SEARCH (Combined all sources)
 // ================================
+
+// ================================
+// TRANSLATE QUERY TO ENGLISH
+// ================================
+
+async function translateToEnglish(query) {
+  try {
+
+    // detect if query already English
+    const englishRegex = /^[a-zA-Z\s]+$/;
+
+    if (englishRegex.test(query)) {
+      return query.toLowerCase();
+    }
+
+    const response = await axios.get(
+      "https://translate.googleapis.com/translate_a/single",
+      {
+        params: {
+          client: "gtx",
+          sl: "auto",
+          tl: "en",
+          dt: "t",
+          q: query
+        }
+      }
+    );
+
+    const translated = response.data[0][0][0];
+
+    console.log("Translated query:", translated);
+
+    return translated.toLowerCase();
+
+  } catch (error) {
+
+    console.log("Translation error:", error.message);
+
+    return query.toLowerCase();
+  }
+}
 app.get("/api/food/search", async (req, res) => {
   try {
     let query = req.query.q;
