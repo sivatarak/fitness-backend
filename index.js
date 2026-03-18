@@ -305,86 +305,6 @@ async function searchIndianFoods(query) {
 // ================================
 // MAIN FOOD SEARCH ROUTE - IMPROVED
 // ================================
-// ================================
-// TEST FATSECRET ENDPOINT
-// ================================
-// ================================
-// TEST ONLY FATSECRET
-// ================================
-app.get("/api/test-fatsecret", async (req, res) => {
-  const query = req.query.q || "dosa";
-
-  console.log("\n========== TESTING FATSECRET ==========");
-  console.log("Query:", query);
-
-  try {
-    // 1. Check if we can get token
-    console.log("\n1. Getting token...");
-    const token = await getFatSecretToken();
-
-    if (!token) {
-      console.log("❌ Failed to get token");
-      return res.json({ error: "No token" });
-    }
-    console.log("✅ Token obtained:", token.substring(0, 20) + "...");
-
-    // 2. Try API call with v4
-    console.log("\n2. Calling FatSecret API (v4)...");
-    const response = await axios.post(
-      "https://platform.fatsecret.com/rest/server.api",
-      null,
-      {
-        params: {
-          method: "foods.search.v4",
-          search_expression: query,
-          format: "json",
-          max_results: 10
-        },
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json"
-        },
-        timeout: 10000
-      }
-    );
-
-    console.log("✅ API responded with status:", response.status);
-    console.log("Response structure:", Object.keys(response.data));
-
-    // 3. Check what's in the response
-    const foods = response.data?.foods_search?.results?.food;
-    console.log("\n3. Foods found:", foods ? (Array.isArray(foods) ? foods.length : 1) : 0);
-
-    if (foods) {
-      const foodList = Array.isArray(foods) ? foods : [foods];
-      console.log("\n4. First item (if any):", foodList[0] ? {
-        name: foodList[0].food_name,
-        has_servings: !!foodList[0].servings
-      } : "No items");
-    }
-
-    // 4. Return full response for inspection
-    res.json({
-      query,
-      token_working: true,
-      full_response: response.data
-    });
-
-  } catch (error) {
-    console.log("\n❌ ERROR:");
-    console.log("Message:", error.message);
-    if (error.response) {
-      console.log("Status:", error.response.status);
-      console.log("Data:", error.response.data);
-    }
-
-    res.json({
-      error: error.message,
-      response_data: error.response?.data
-    });
-  }
-});
-
 app.get("/api/food/search", async (req, res) => {
   try {
     let query = req.query.q;
@@ -463,7 +383,7 @@ app.get("/api/food/search", async (req, res) => {
 
     for (const item of results) {
       const normalizedName = item.name.toLowerCase().trim();
-
+      
       // If we haven't seen this food, add it
       if (!seenNames.has(normalizedName)) {
         seenNames.set(normalizedName, item);
@@ -477,7 +397,7 @@ app.get("/api/food/search", async (req, res) => {
           'usda': 3,
           'openfoodfacts': 4
         };
-
+        
         if (sourcePriority[item.source] < sourcePriority[existingItem.source]) {
           // Replace with higher priority source
           const index = uniqueResults.indexOf(existingItem);
@@ -492,14 +412,14 @@ app.get("/api/food/search", async (req, res) => {
       const aExact = a.name.toLowerCase() === query.toLowerCase() ? 0 : 1;
       const bExact = b.name.toLowerCase() === query.toLowerCase() ? 0 : 1;
       if (aExact !== bExact) return aExact - bExact;
-
+      
       // Then by source priority
       const sourcePriority = { 'indian_db': 1, 'fatsecret': 2, 'usda': 3, 'openfoodfacts': 4 };
       return sourcePriority[a.source] - sourcePriority[b.source];
     });
 
     res.json(uniqueResults.slice(0, 20));
-
+    
   } catch (error) {
     console.log("Search error:", error.message);
     res.status(500).json({ error: "Food search failed" });
