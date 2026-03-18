@@ -499,19 +499,41 @@ app.get("/api/food/logs/:userId", async (req, res) => {
 // ================================
 // 4. EXERCISES ENDPOINT
 // ================================
-app.get("/api/exercises", async (req, res) => {
+aapp.get("/api/exercises", async (req, res) => {
   try {
     const { bodyPart, equipment, difficulty, limit = 100 } = req.query;
 
-    let query = sql`SELECT * FROM exercises WHERE 1=1`;
+    const conditions = [];
+    const values = [];
 
-    if (bodyPart) query = sql`${query} AND body_part = ${bodyPart}`;
-    if (equipment) query = sql`${query} AND equipment = ${equipment}`;
-    if (difficulty) query = sql`${query} AND difficulty = ${difficulty}`;
+    if (bodyPart) {
+      values.push(bodyPart);
+      conditions.push(`body_part = $${values.length}`);
+    }
+    if (equipment) {
+      values.push(equipment);
+      conditions.push(`equipment = $${values.length}`);
+    }
+    if (difficulty) {
+      values.push(difficulty);
+      conditions.push(`difficulty = $${values.length}`);
+    }
 
-    query = sql`${query} ORDER BY body_part, name LIMIT ${limit}`;
+    values.push(parseInt(limit));
+    const limitPlaceholder = `$${values.length}`;
 
-    const exercises = await query;
+    const whereClause = conditions.length > 0
+      ? `WHERE ${conditions.join(" AND ")}`
+      : "";
+
+    const queryString = `
+      SELECT * FROM exercises
+      ${whereClause}
+      ORDER BY body_part, name
+      LIMIT ${limitPlaceholder}
+    `;
+
+    const exercises = await sql.unsafe(queryString, values);
     res.json(exercises);
   } catch (error) {
     console.log("Get exercises error:", error.message);
