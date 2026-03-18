@@ -687,7 +687,7 @@ app.post("/api/weight", async (req, res) => {
     `;
 
     await sql`
-      UPDATE user_profiles SET current_weight = ${weight}, updated_at = NOW()
+      UPDATE user_profiles SET weight  = ${weight}, updated_at = NOW()
       WHERE user_id = ${userId}
     `;
 
@@ -744,7 +744,7 @@ app.post("/api/profile", async (req, res) => {
     // Upsert profile
     const profile = await sql`
       INSERT INTO user_profiles (
-        user_id, name, age, current_weight, height, gender,
+        user_id, name, age, weight , height, gender,
         target_weight, activity_level, workout_days, water_goal,
         daily_calorie_goal, bmr, tdee, profile_complete, updated_at
       ) VALUES (
@@ -753,7 +753,7 @@ app.post("/api/profile", async (req, res) => {
         ${dailyCalorieGoal || tdee}, ${bmr}, ${tdee}, true, NOW()
       )
       ON CONFLICT (user_id) DO UPDATE SET
-        name = ${name}, age = ${age}, current_weight = ${weight},
+        name = ${name}, age = ${age}, weight  = ${weight},
         height = ${height}, gender = ${gender}, target_weight = ${targetWeight},
         activity_level = ${activityLevel}, workout_days = ${JSON.stringify(workoutDays || [])},
         water_goal = ${waterGoal}, daily_calorie_goal = ${dailyCalorieGoal || tdee},
