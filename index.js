@@ -383,7 +383,7 @@ app.get("/api/food/search", async (req, res) => {
 
     for (const item of results) {
       const normalizedName = item.name.toLowerCase().trim();
-      
+
       // If we haven't seen this food, add it
       if (!seenNames.has(normalizedName)) {
         seenNames.set(normalizedName, item);
@@ -397,7 +397,7 @@ app.get("/api/food/search", async (req, res) => {
           'usda': 3,
           'openfoodfacts': 4
         };
-        
+
         if (sourcePriority[item.source] < sourcePriority[existingItem.source]) {
           // Replace with higher priority source
           const index = uniqueResults.indexOf(existingItem);
@@ -412,14 +412,14 @@ app.get("/api/food/search", async (req, res) => {
       const aExact = a.name.toLowerCase() === query.toLowerCase() ? 0 : 1;
       const bExact = b.name.toLowerCase() === query.toLowerCase() ? 0 : 1;
       if (aExact !== bExact) return aExact - bExact;
-      
+
       // Then by source priority
       const sourcePriority = { 'indian_db': 1, 'fatsecret': 2, 'usda': 3, 'openfoodfacts': 4 };
       return sourcePriority[a.source] - sourcePriority[b.source];
     });
 
     res.json(uniqueResults.slice(0, 20));
-    
+
   } catch (error) {
     console.log("Search error:", error.message);
     res.status(500).json({ error: "Food search failed" });
@@ -722,6 +722,9 @@ app.get("/api/weight/:userId", async (req, res) => {
 // ================================
 // 12. USER PROFILE (SINGLE ROUTE)
 // ================================
+// ================================
+// 12. USER PROFILE - COMPLETE FIXED VERSION
+// ================================
 app.post("/api/profile", async (req, res) => {
   try {
     const {
@@ -729,42 +732,148 @@ app.post("/api/profile", async (req, res) => {
       targetWeight, activityLevel, workoutDays, dailyCalorieGoal
     } = req.body;
 
-    if (!userId || !name) return res.status(400).json({ error: "userId and name required" });
+    // Validate required fields
+    if (!userId || !name) {
+      return res.status(400).json({ error: "userId and name required" });
+    }
 
-    // Calculate goals
-    const bmr = gender === 'male'
-      ? (10 * weight) + (6.25 * height) - (5 * age) + 5
-      : (10 * weight) + (6.25 * height) - (5 * age) - 161;
+    if (!age || !weight || !height || !gender) {
+      return res.status(400).json({ error: "age, weight, height, and gender required" });
+    }
 
-    const activityMultipliers = { 'sedentary': 1.2, 'light': 1.375, 'moderate': 1.55, 'active': 1.725, 'very_active': 1.9 };
-    const tdee = Math.round(bmr * (activityMultipliers[activityLevel] || 1.2));
+    // Parse all numeric values
+    const ageNum = parseInt(age) || 25;
+    const weightNum = parseFloat(weight) || 70;
+    const heightNum = parseFloat(height) || 170;
+    const targetWeightNum = parseFloat(targetWeight) || weightNum;
 
-    const waterGoal = Math.round(weight * 33); // ml
+    console.log("Calculating profile with:", { ageNum, weightNum, heightNum, gender });
 
-    // Upsert profile
+    // Calculate BMR (Mifflin-St Jeor Formula)
+    let bmr;
+    if (gender === 'male') {
+      bmr = (10 * weightNum) + (6.25 * heightNum) - (5 * ageNum) + 5;
+    } else {
+      bmr = (10 * weightNum) + (6.25 * heightNum) - (5 * ageNum) - 161;
+    }
+
+    // Round BMR to nearest integer
+    const bmrRounded = Math.round(bmr);
+
+    // Activity level multipliers
+    const activityMultipliers = {
+      'sedentary': 1.2,
+      'light': 1.375,
+      'moderate': 1.55,
+      'active': 1.725,
+      'very_active': 1.9
+    };
+
+    // Get multiplier based on activity level (default to moderate)
+    const multiplier = activityMultipliers[activityLevel] || 1.55;
+
+    // Calculate TDEE and round to integer
+    const tdee = Math.round(bmrRounded * multiplier);
+
+    // Calculate daily calorie goal (use provided or TDEE)
+    const dailyGoal = dailyCalorieGoal ? Math.round(dailyCalorieGoal) : tdee;
+
+    // Calculate water goal (33ml per kg of body weight)
+    const waterGoal = Math.round(weightNum * 33);
+
+    // Ensure workoutDays is an array and stringify for JSON storage
+    const workoutDaysArray = Array.isArray(workoutDays) ? workoutDays : [];
+    const workoutDaysJson = JSON.stringify(workoutDaysArray);
+
+    console.log("Saving profile with values:", {
+      userId,
+      name,
+      age: ageNum,
+      weight: weightNum,
+      height: heightNum,
+      gender,
+      targetWeight: targetWeightNum,
+      activityLevel,
+      bmr: bmrRounded,
+      tdee,
+      dailyGoal,
+      waterGoal,
+      workoutDays: workoutDaysArray
+    });
+
+    // Upsert profile with ALL values rounded to integers where needed
     const profile = await sql`
       INSERT INTO user_profiles (
-        user_id, name, age, weight , height, gender,
-        target_weight, activity_level, workout_days, water_goal,
-        daily_calorie_goal, bmr, tdee, profile_complete, updated_at
+        user_id, 
+        name, 
+        age, 
+        weight, 
+        height, 
+        gender,
+        target_weight, 
+        activity_level, 
+        workout_days, 
+        water_goal,
+        daily_calorie_goal, 
+        bmr, 
+        tdee, 
+        profile_complete, 
+        created_at,
+        updated_at
       ) VALUES (
-        ${userId}, ${name}, ${age}, ${weight}, ${height}, ${gender},
-        ${targetWeight}, ${activityLevel}, ${JSON.stringify(workoutDays || [])}, ${waterGoal},
-        ${dailyCalorieGoal || tdee}, ${bmr}, ${tdee}, true, NOW()
+        ${userId}, 
+        ${name}, 
+        ${ageNum}, 
+        ${weightNum}, 
+        ${heightNum}, 
+        ${gender},
+        ${targetWeightNum}, 
+        ${activityLevel}, 
+        ${workoutDaysJson}, 
+        ${waterGoal},
+        ${dailyGoal}, 
+        ${bmrRounded}, 
+        ${tdee}, 
+        true, 
+        NOW(),
+        NOW()
       )
       ON CONFLICT (user_id) DO UPDATE SET
-        name = ${name}, age = ${age}, weight  = ${weight},
-        height = ${height}, gender = ${gender}, target_weight = ${targetWeight},
-        activity_level = ${activityLevel}, workout_days = ${JSON.stringify(workoutDays || [])},
-        water_goal = ${waterGoal}, daily_calorie_goal = ${dailyCalorieGoal || tdee},
-        bmr = ${bmr}, tdee = ${tdee}, updated_at = NOW()
+        name = ${name},
+        age = ${ageNum},
+        weight = ${weightNum},
+        height = ${heightNum},
+        gender = ${gender},
+        target_weight = ${targetWeightNum},
+        activity_level = ${activityLevel},
+        workout_days = ${workoutDaysJson},
+        water_goal = ${waterGoal},
+        daily_calorie_goal = ${dailyGoal},
+        bmr = ${bmrRounded},
+        tdee = ${tdee},
+        profile_complete = true,
+        updated_at = NOW()
       RETURNING *
     `;
 
-    res.json(profile[0]);
+    // Return the created/updated profile
+    res.status(201).json(profile[0]);
+
   } catch (error) {
-    console.log("Profile error:", error.message);
-    res.status(500).json({ error: "Failed to save profile" });
+    console.error("Profile error:", error);
+
+    // Handle specific database errors
+    if (error.code === '23502') { // Not null violation
+      return res.status(400).json({ error: "Missing required field: " + error.column });
+    }
+    if (error.code === '23505') { // Unique violation
+      return res.status(409).json({ error: "Profile already exists" });
+    }
+    if (error.code === '22P02') { // Invalid input syntax
+      return res.status(400).json({ error: "Invalid data type provided" });
+    }
+
+    res.status(500).json({ error: "Failed to save profile: " + error.message });
   }
 });
 
@@ -775,16 +884,36 @@ app.get("/api/profile/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
 
-    const profile = await sql`SELECT * FROM user_profiles WHERE user_id = ${userId}`;
-    if (profile.length === 0) return res.status(404).json({ error: "Profile not found" });
+    if (!userId) {
+      return res.status(400).json({ error: "userId required" });
+    }
 
-    res.json(profile[0]);
+    const profiles = await sql`
+      SELECT * FROM user_profiles 
+      WHERE user_id = ${userId}
+    `;
+
+    if (profiles.length === 0) {
+      return res.status(404).json({ error: "Profile not found" });
+    }
+
+    // Parse workout_days back to array if it's stored as JSON
+    const profile = profiles[0];
+    if (profile.workout_days && typeof profile.workout_days === 'string') {
+      try {
+        profile.workout_days = JSON.parse(profile.workout_days);
+      } catch (e) {
+        profile.workout_days = [];
+      }
+    }
+
+    res.json(profile);
+
   } catch (error) {
-    console.log("Get profile error:", error.message);
+    console.error("Get profile error:", error);
     res.status(500).json({ error: "Failed to get profile" });
   }
 });
-
 // ================================
 // 14. DASHBOARD (SINGLE ROUTE)
 // ================================
@@ -796,39 +925,39 @@ app.get("/api/dashboard/:userId", async (req, res) => {
     const profile = await sql`SELECT * FROM user_profiles WHERE user_id = ${userId}`;
     if (profile.length === 0) return res.status(404).json({ error: "Profile not found" });
 
-    // Get today's food
+    // Get today's food - ROUND the values
     const food = await sql`
       SELECT 
-        COALESCE(SUM(calories * quantity), 0) as calories,
-        COALESCE(SUM(protein * quantity), 0) as protein,
-        COALESCE(SUM(carbs * quantity), 0) as carbs,
-        COALESCE(SUM(fat * quantity), 0) as fat
+        ROUND(COALESCE(SUM(calories * quantity), 0)) as calories,
+        ROUND(COALESCE(SUM(protein * quantity), 0)) as protein,
+        ROUND(COALESCE(SUM(carbs * quantity), 0)) as carbs,
+        ROUND(COALESCE(SUM(fat * quantity), 0)) as fat
       FROM food_logs
       WHERE user_id = ${userId} AND DATE(logged_at) = CURRENT_DATE
     `;
 
-    // Get today's workouts
+    // Get today's workouts - ROUND the values
     const workout = await sql`
       SELECT 
         COUNT(*) as count,
-        COALESCE(SUM(duration_minutes), 0) as duration,
-        COALESCE(SUM(total_volume), 0) as total_volume
+        ROUND(COALESCE(SUM(duration_minutes), 0)) as duration,
+        ROUND(COALESCE(SUM(total_volume), 0)) as total_volume
       FROM workouts
       WHERE user_id = ${userId} AND DATE(completed_at) = CURRENT_DATE
     `;
 
-    // Get today's water
+    // Get today's water - ROUND the values
     const water = await sql`
-      SELECT COALESCE(SUM(amount_ml), 0) as total_ml
+      SELECT ROUND(COALESCE(SUM(amount_ml), 0)) as total_ml
       FROM water_logs
       WHERE user_id = ${userId} AND DATE(logged_at) = CURRENT_DATE
     `;
 
-    // Get weekly data for charts
+    // Get weekly data for charts - ROUND the values
     const weekly = await sql`
       SELECT 
         DATE(logged_at) as date,
-        COALESCE(SUM(calories * quantity), 0) as calories
+        ROUND(COALESCE(SUM(calories * quantity), 0)) as calories
       FROM food_logs
       WHERE user_id = ${userId} AND logged_at >= NOW() - INTERVAL '7 days'
       GROUP BY DATE(logged_at)
@@ -843,7 +972,7 @@ app.get("/api/dashboard/:userId", async (req, res) => {
         water: { total_ml: Number(water[0].total_ml), goal: profile[0].water_goal },
         net_calories: Number(food[0].calories)
       },
-      weekly: weekly
+      weekly
     });
   } catch (error) {
     console.log("Dashboard error:", error.message);
