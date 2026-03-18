@@ -725,11 +725,14 @@ app.get("/api/weight/:userId", async (req, res) => {
 // ================================
 // 12. USER PROFILE - COMPLETE FIXED VERSION
 // ================================
+// ================================
+// 12. USER PROFILE - COMPLETE FIXED VERSION WITH TIMELINE
+// ================================
 app.post("/api/profile", async (req, res) => {
   try {
     const {
       userId, name, age, weight, height, gender,
-      targetWeight, activityLevel, workoutDays, dailyCalorieGoal
+      targetWeight, timeline, activityLevel, workoutDays, dailyCalorieGoal
     } = req.body;
 
     // Validate required fields
@@ -737,8 +740,8 @@ app.post("/api/profile", async (req, res) => {
       return res.status(400).json({ error: "userId and name required" });
     }
 
-    if (!age || !weight || !height || !gender) {
-      return res.status(400).json({ error: "age, weight, height, and gender required" });
+    if (!age || !weight || !height || !gender || !timeline) {
+      return res.status(400).json({ error: "age, weight, height, gender, and timeline required" });
     }
 
     // Parse all numeric values
@@ -746,8 +749,9 @@ app.post("/api/profile", async (req, res) => {
     const weightNum = parseFloat(weight) || 70;
     const heightNum = parseFloat(height) || 170;
     const targetWeightNum = parseFloat(targetWeight) || weightNum;
+    const timelineNum = parseInt(timeline) || 12; // Default to 12 weeks
 
-    console.log("Calculating profile with:", { ageNum, weightNum, heightNum, gender });
+    console.log("Calculating profile with:", { ageNum, weightNum, heightNum, gender, timeline: timelineNum });
 
     // Calculate BMR (Mifflin-St Jeor Formula)
     let bmr;
@@ -781,6 +785,10 @@ app.post("/api/profile", async (req, res) => {
     // Calculate water goal (33ml per kg of body weight)
     const waterGoal = Math.round(weightNum * 33);
 
+    // Calculate weekly weight loss goal
+    const weightDiff = Math.abs(weightNum - targetWeightNum);
+    const weeklyWeightLoss = weightDiff / timelineNum;
+
     // Ensure workoutDays is an array and stringify for JSON storage
     const workoutDaysArray = Array.isArray(workoutDays) ? workoutDays : [];
     const workoutDaysJson = JSON.stringify(workoutDaysArray);
@@ -793,11 +801,13 @@ app.post("/api/profile", async (req, res) => {
       height: heightNum,
       gender,
       targetWeight: targetWeightNum,
+      timeline: timelineNum,
       activityLevel,
       bmr: bmrRounded,
       tdee,
       dailyGoal,
       waterGoal,
+      weeklyWeightLoss,
       workoutDays: workoutDaysArray
     });
 
@@ -811,6 +821,8 @@ app.post("/api/profile", async (req, res) => {
         height, 
         gender,
         target_weight, 
+        timeline,
+        weekly_weight_loss,
         activity_level, 
         workout_days, 
         water_goal,
@@ -828,6 +840,8 @@ app.post("/api/profile", async (req, res) => {
         ${heightNum}, 
         ${gender},
         ${targetWeightNum}, 
+        ${timelineNum},
+        ${weeklyWeightLoss},
         ${activityLevel}, 
         ${workoutDaysJson}, 
         ${waterGoal},
@@ -845,6 +859,8 @@ app.post("/api/profile", async (req, res) => {
         height = ${heightNum},
         gender = ${gender},
         target_weight = ${targetWeightNum},
+        timeline = ${timelineNum},
+        weekly_weight_loss = ${weeklyWeightLoss},
         activity_level = ${activityLevel},
         workout_days = ${workoutDaysJson},
         water_goal = ${waterGoal},
