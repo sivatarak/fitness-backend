@@ -501,7 +501,7 @@ app.get("/api/food/logs/:userId", async (req, res) => {
 // ================================
 app.get("/api/exercises", async (req, res) => {
   try {
-    const { bodyPart, equipment, difficulty, limit = 100 } = req.query;
+    const { bodyPart, equipment, difficulty, exercise_type, limit = 100 } = req.query;
 
     const conditions = [];
     const values = [];
@@ -518,6 +518,10 @@ app.get("/api/exercises", async (req, res) => {
       values.push(difficulty);
       conditions.push(`difficulty = $${values.length}`);
     }
+    if (exercise_type) {
+      values.push(exercise_type);
+      conditions.push(`exercise_type = $${values.length}`);
+    }
 
     values.push(parseInt(limit));
     const limitPlaceholder = `$${values.length}`;
@@ -527,17 +531,85 @@ app.get("/api/exercises", async (req, res) => {
       : "";
 
     const queryString = `
-      SELECT * FROM exercises
+      SELECT 
+        id, name, body_part, target_muscle, equipment,
+        difficulty, exercise_type, instructions, secondary_muscles,
+        met_value, youtube_video_id, video_title, video_duration_seconds
+      FROM exercises
       ${whereClause}
       ORDER BY body_part, name
       LIMIT ${limitPlaceholder}
     `;
 
-    const exercises = await sql.unsafe(queryString, values);
+    const { rows: exercises } = await sql.query(queryString, values);
     res.json(exercises);
   } catch (error) {
     console.log("Get exercises error:", error.message);
     res.status(500).json({ error: "Failed to get exercises" });
+  }
+});
+
+app.get("/api/exercises/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const { rows } = await sql.query(
+      `SELECT * FROM exercises WHERE id = $1`,
+      [id]
+    );
+
+    if (rows.length === 0)
+      return res.status(404).json({ error: "Exercise not found" });
+
+    let ex = rows[0];
+
+    // Auto-fetch YouTube video if needed
+    if (!ex.youtube_video_id && process.env.YOUTUBE_API_KEY) {
+      try {
+        const searchQuery = `${ex.name} proper form tutorial`;
+        const youtubeResponse = await axios.get(
+          "https://www.googleapis.com/youtube/v3/search",
+          {
+            params: {
+              key: process.env.YOUTUBE_API_KEY,
+              q: searchQuery,
+              part: "snippet",
+              type: "video",
+              maxResults: 1,
+            },
+          }
+        );
+
+        if (youtubeResponse.data.items.length > 0) {
+          const videoId = youtubeResponse.data.items[0].id.videoId;
+          const videoTitle = youtubeResponse.data.items[0].snippet.title;
+
+          await sql.query(
+            `UPDATE exercises
+             SET youtube_video_id = $1, video_title = $2,
+                 video_fetched_at = NOW(), updated_at = NOW()
+             WHERE id = $3`,
+            [videoId, videoTitle, id]
+          );
+
+          ex.youtube_video_id = videoId;
+          ex.video_title = videoTitle;
+        }
+      } catch (ytError) {
+        console.log("YouTube search failed:", ytError.message);
+      }
+    }
+
+    // Increment view count
+    await sql.query(
+      `UPDATE exercises SET video_view_count = COALESCE(video_view_count, 0) + 1 WHERE id = $1`,
+      [id]
+    );
+
+    res.json(ex);
+  } catch (error) {
+    console.log("Get exercise error:", error.message);
+    res.status(500).json({ error: "Failed to get exercise" });
   }
 });
 
