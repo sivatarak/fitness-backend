@@ -499,7 +499,7 @@ app.get("/api/food/logs/:userId", async (req, res) => {
 // ================================
 // 4. EXERCISES ENDPOINT
 // ================================
-aapp.get("/api/exercises", async (req, res) => {
+app.get("/api/exercises", async (req, res) => {
   try {
     const { bodyPart, equipment, difficulty, limit = 100 } = req.query;
 
