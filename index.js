@@ -789,160 +789,151 @@ app.post("/api/profile", async (req, res) => {
       targetWeight, timeline, activityLevel, workoutDays, dailyCalorieGoal
     } = req.body;
 
-    // Validate required fields
-    if (!userId || !name) {
-      return res.status(400).json({ error: "userId and name required" });
+    // Only userId is absolutely required
+    if (!userId) {
+      return res.status(400).json({ error: "userId required" });
     }
 
-    if (!age || !weight || !height || !gender || !timeline) {
-      return res.status(400).json({ error: "age, weight, height, gender, and timeline required" });
+    // Check if user exists in users table (create if not)
+    const userExists = await sql`SELECT id FROM users WHERE id = ${userId}`;
+    if (userExists.length === 0) {
+      await sql`
+        INSERT INTO users (id, email, name, created_at)
+        VALUES (${userId}, ${userId} + '@betofit.com', ${name || 'User'}, NOW())
+      `;
     }
 
-    // Parse all numeric values
-    const ageNum = parseInt(age) || 25;
-    const weightNum = parseFloat(weight) || 70;
-    const heightNum = parseFloat(height) || 170;
-    const targetWeightNum = parseFloat(targetWeight) || weightNum;
-    const timelineNum = parseInt(timeline) || 12; // Default to 12 weeks
+    // Get existing profile
+    const existingProfile = await sql`
+      SELECT * FROM user_profiles WHERE user_id = ${userId}
+    `;
 
-    console.log("Calculating profile with:", { ageNum, weightNum, heightNum, gender, timeline: timelineNum });
+    // Prepare data with existing values or defaults
+    let finalName = name;
+    let finalAge = age ? parseInt(age) : null;
+    let finalWeight = weight ? parseFloat(weight) : null;
+    let finalHeight = height ? parseFloat(height) : null;
+    let finalGender = gender;
+    let finalTargetWeight = targetWeight ? parseFloat(targetWeight) : null;
+    let finalTimeline = timeline ? parseInt(timeline) : null;
+    let finalActivityLevel = activityLevel;
+    let finalWorkoutDays = Array.isArray(workoutDays) ? workoutDays : [];
+    let finalDailyCalorieGoal = dailyCalorieGoal ? Math.round(dailyCalorieGoal) : null;
 
-    // Calculate BMR (Mifflin-St Jeor Formula)
-    let bmr;
-    if (gender === 'male') {
-      bmr = (10 * weightNum) + (6.25 * heightNum) - (5 * ageNum) + 5;
-    } else {
-      bmr = (10 * weightNum) + (6.25 * heightNum) - (5 * ageNum) - 161;
+    // If profile exists, use existing values for missing fields
+    if (existingProfile.length > 0) {
+      const existing = existingProfile[0];
+      if (finalName === undefined) finalName = existing.name;
+      if (finalAge === null) finalAge = existing.age;
+      if (finalWeight === null) finalWeight = existing.weight;
+      if (finalHeight === null) finalHeight = existing.height;
+      if (finalGender === undefined) finalGender = existing.gender;
+      if (finalTargetWeight === null) finalTargetWeight = existing.target_weight;
+      if (finalTimeline === null) finalTimeline = existing.timeline;
+      if (finalActivityLevel === undefined) finalActivityLevel = existing.activity_level;
+      if (finalWorkoutDays.length === 0 && existing.workout_days) {
+        finalWorkoutDays = JSON.parse(existing.workout_days);
+      }
+      if (finalDailyCalorieGoal === null) finalDailyCalorieGoal = existing.daily_calorie_goal;
     }
 
-    // Round BMR to nearest integer
-    const bmrRounded = Math.round(bmr);
+    // Validate only if we have the data for calculations
+    let bmrRounded = null;
+    let tdee = null;
+    let waterGoal = null;
+    let weeklyWeightLoss = null;
+    let dailyGoal = finalDailyCalorieGoal;
 
-    // Activity level multipliers
-    const activityMultipliers = {
-      'sedentary': 1.2,
-      'light': 1.375,
-      'moderate': 1.55,
-      'active': 1.725,
-      'very_active': 1.9
-    };
+    // Calculate BMR and TDEE if we have all required data
+    if (finalWeight && finalHeight && finalAge && finalGender) {
+      let bmr;
+      if (finalGender === 'male') {
+        bmr = (10 * finalWeight) + (6.25 * finalHeight) - (5 * finalAge) + 5;
+      } else {
+        bmr = (10 * finalWeight) + (6.25 * finalHeight) - (5 * finalAge) - 161;
+      }
+      bmrRounded = Math.round(bmr);
 
-    // Get multiplier based on activity level (default to moderate)
-    const multiplier = activityMultipliers[activityLevel] || 1.55;
+      const activityMultipliers = {
+        'sedentary': 1.2, 'light': 1.375, 'moderate': 1.55,
+        'active': 1.725, 'very_active': 1.9
+      };
+      const multiplier = activityMultipliers[finalActivityLevel] || 1.55;
+      tdee = Math.round(bmrRounded * multiplier);
 
-    // Calculate TDEE and round to integer
-    const tdee = Math.round(bmrRounded * multiplier);
+      // Water goal
+      waterGoal = Math.round(finalWeight * 33);
 
-    // Calculate daily calorie goal (use provided or TDEE)
-    const dailyGoal = dailyCalorieGoal ? Math.round(dailyCalorieGoal) : tdee;
+      // Daily calorie goal if not provided
+      if (!finalDailyCalorieGoal && finalTargetWeight && finalTimeline) {
+        const weightDiff = Math.abs(finalWeight - finalTargetWeight);
+        weeklyWeightLoss = weightDiff / finalTimeline;
+        const dailyDeficit = Math.round((weeklyWeightLoss * 7700) / 7);
+        const isLosingWeight = finalWeight > finalTargetWeight;
+        dailyGoal = isLosingWeight ? tdee - dailyDeficit : tdee + dailyDeficit;
+      } else if (!finalDailyCalorieGoal) {
+        dailyGoal = tdee;
+      }
+    }
 
-    // Calculate water goal (33ml per kg of body weight)
-    const waterGoal = Math.round(weightNum * 33);
-
-    // Calculate weekly weight loss goal
-    const weightDiff = Math.abs(weightNum - targetWeightNum);
-    const weeklyWeightLoss = weightDiff / timelineNum;
-
-    // Ensure workoutDays is an array and stringify for JSON storage
-    const workoutDaysArray = Array.isArray(workoutDays) ? workoutDays : [];
-    const workoutDaysJson = JSON.stringify(workoutDaysArray);
+    const workoutDaysJson = JSON.stringify(finalWorkoutDays);
 
     console.log("Saving profile with values:", {
       userId,
-      name,
-      age: ageNum,
-      weight: weightNum,
-      height: heightNum,
-      gender,
-      targetWeight: targetWeightNum,
-      timeline: timelineNum,
-      activityLevel,
+      name: finalName,
+      age: finalAge,
+      weight: finalWeight,
+      height: finalHeight,
+      gender: finalGender,
+      targetWeight: finalTargetWeight,
+      timeline: finalTimeline,
+      activityLevel: finalActivityLevel,
       bmr: bmrRounded,
-      tdee,
-      dailyGoal,
-      waterGoal,
-      weeklyWeightLoss,
-      workoutDays: workoutDaysArray
+      tdee: tdee,
+      dailyGoal: dailyGoal,
+      waterGoal: waterGoal,
+      workoutDays: finalWorkoutDays
     });
 
-    // Upsert profile with ALL values rounded to integers where needed
+    // Upsert profile
     const profile = await sql`
       INSERT INTO user_profiles (
-        user_id, 
-        name, 
-        age, 
-        weight, 
-        height, 
-        gender,
-        target_weight, 
-        timeline,
-        weekly_weight_loss,
-        activity_level, 
-        workout_days, 
-        water_goal,
-        daily_calorie_goal, 
-        bmr, 
-        tdee, 
-        profile_complete, 
-        created_at,
-        updated_at
+        user_id, name, age, weight, height, gender,
+        target_weight, timeline, weekly_weight_loss,
+        activity_level, workout_days, water_goal,
+        daily_calorie_goal, bmr, tdee,
+        profile_complete, created_at, updated_at
       ) VALUES (
-        ${userId}, 
-        ${name}, 
-        ${ageNum}, 
-        ${weightNum}, 
-        ${heightNum}, 
-        ${gender},
-        ${targetWeightNum}, 
-        ${timelineNum},
-        ${weeklyWeightLoss},
-        ${activityLevel}, 
-        ${workoutDaysJson}, 
-        ${waterGoal},
-        ${dailyGoal}, 
-        ${bmrRounded}, 
-        ${tdee}, 
-        true, 
-        NOW(),
-        NOW()
+        ${userId}, ${finalName}, ${finalAge}, ${finalWeight}, ${finalHeight}, ${finalGender},
+        ${finalTargetWeight}, ${finalTimeline}, ${weeklyWeightLoss},
+        ${finalActivityLevel}, ${workoutDaysJson}, ${waterGoal},
+        ${dailyGoal}, ${bmrRounded}, ${tdee},
+        true, NOW(), NOW()
       )
       ON CONFLICT (user_id) DO UPDATE SET
-        name = ${name},
-        age = ${ageNum},
-        weight = ${weightNum},
-        height = ${heightNum},
-        gender = ${gender},
-        target_weight = ${targetWeightNum},
-        timeline = ${timelineNum},
-        weekly_weight_loss = ${weeklyWeightLoss},
-        activity_level = ${activityLevel},
-        workout_days = ${workoutDaysJson},
-        water_goal = ${waterGoal},
-        daily_calorie_goal = ${dailyGoal},
-        bmr = ${bmrRounded},
-        tdee = ${tdee},
+        name = EXCLUDED.name,
+        age = EXCLUDED.age,
+        weight = EXCLUDED.weight,
+        height = EXCLUDED.height,
+        gender = EXCLUDED.gender,
+        target_weight = EXCLUDED.target_weight,
+        timeline = EXCLUDED.timeline,
+        weekly_weight_loss = EXCLUDED.weekly_weight_loss,
+        activity_level = EXCLUDED.activity_level,
+        workout_days = EXCLUDED.workout_days,
+        water_goal = EXCLUDED.water_goal,
+        daily_calorie_goal = EXCLUDED.daily_calorie_goal,
+        bmr = EXCLUDED.bmr,
+        tdee = EXCLUDED.tdee,
         profile_complete = true,
         updated_at = NOW()
       RETURNING *
     `;
 
-    // Return the created/updated profile
     res.status(201).json(profile[0]);
 
   } catch (error) {
     console.error("Profile error:", error);
-
-    // Handle specific database errors
-    if (error.code === '23502') { // Not null violation
-      return res.status(400).json({ error: "Missing required field: " + error.column });
-    }
-    if (error.code === '23505') { // Unique violation
-      return res.status(409).json({ error: "Profile already exists" });
-    }
-    if (error.code === '22P02') { // Invalid input syntax
-      return res.status(400).json({ error: "Invalid data type provided" });
-    }
-
     res.status(500).json({ error: "Failed to save profile: " + error.message });
   }
 });
