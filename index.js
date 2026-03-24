@@ -798,9 +798,9 @@ app.post("/api/profile", async (req, res) => {
     const userExists = await sql`SELECT id FROM users WHERE id = ${userId}`;
     if (userExists.length === 0) {
       await sql`
-        INSERT INTO users (id, email, name, created_at)
-        VALUES (${userId}, ${userId} + '@betofit.com', ${name || 'User'}, NOW())
-      `;
+    INSERT INTO users (id, email, name, created_at)
+    VALUES (${userId}, ${userId} || '@betofit.com', ${name || 'User'}, NOW())
+  `;
     }
 
     // Get existing profile
