@@ -782,6 +782,9 @@ app.get("/api/weight/:userId", async (req, res) => {
 // ================================
 // 12. USER PROFILE - COMPLETE FIXED VERSION WITH TIMELINE
 // ================================
+// ================================
+// USER PROFILE API - FULLY FIXED
+// ================================
 app.post("/api/profile", async (req, res) => {
   try {
     const {
@@ -798,9 +801,9 @@ app.post("/api/profile", async (req, res) => {
     const userExists = await sql`SELECT id FROM users WHERE id = ${userId}`;
     if (userExists.length === 0) {
       await sql`
-    INSERT INTO users (id, email, name, created_at)
-    VALUES (${userId}, ${userId} || '@betofit.com', ${name || 'User'}, NOW())
-  `;
+        INSERT INTO users (id, email, name, created_at)
+        VALUES (${userId}, ${userId} || '@betofit.com', ${name || 'User'}, NOW())
+      `;
     }
 
     // Get existing profile
@@ -832,12 +835,16 @@ app.post("/api/profile", async (req, res) => {
       if (finalTimeline === null) finalTimeline = existing.timeline;
       if (finalActivityLevel === undefined) finalActivityLevel = existing.activity_level;
       if (finalWorkoutDays.length === 0 && existing.workout_days) {
-        finalWorkoutDays = JSON.parse(existing.workout_days);
+        try {
+          finalWorkoutDays = JSON.parse(existing.workout_days);
+        } catch (e) {
+          finalWorkoutDays = [];
+        }
       }
       if (finalDailyCalorieGoal === null) finalDailyCalorieGoal = existing.daily_calorie_goal;
     }
 
-    // Validate only if we have the data for calculations
+    // Initialize calculated values
     let bmrRounded = null;
     let tdee = null;
     let waterGoal = null;
@@ -855,8 +862,11 @@ app.post("/api/profile", async (req, res) => {
       bmrRounded = Math.round(bmr);
 
       const activityMultipliers = {
-        'sedentary': 1.2, 'light': 1.375, 'moderate': 1.55,
-        'active': 1.725, 'very_active': 1.9
+        'sedentary': 1.2,
+        'light': 1.375,
+        'moderate': 1.55,
+        'active': 1.725,
+        'very_active': 1.9
       };
       const multiplier = activityMultipliers[finalActivityLevel] || 1.55;
       tdee = Math.round(bmrRounded * multiplier);
@@ -865,7 +875,7 @@ app.post("/api/profile", async (req, res) => {
       waterGoal = Math.round(finalWeight * 33);
 
       // Daily calorie goal if not provided
-      if (!finalDailyCalorieGoal && finalTargetWeight && finalTimeline) {
+      if (!finalDailyCalorieGoal && finalTargetWeight && finalTimeline && finalTargetWeight > 0 && finalTimeline > 0) {
         const weightDiff = Math.abs(finalWeight - finalTargetWeight);
         weeklyWeightLoss = weightDiff / finalTimeline;
         const dailyDeficit = Math.round((weeklyWeightLoss * 7700) / 7);
@@ -895,7 +905,7 @@ app.post("/api/profile", async (req, res) => {
       workoutDays: finalWorkoutDays
     });
 
-    // Upsert profile
+    // Upsert profile - explicitly handle NULL values with ?? null
     const profile = await sql`
       INSERT INTO user_profiles (
         user_id, name, age, weight, height, gender,
@@ -904,11 +914,24 @@ app.post("/api/profile", async (req, res) => {
         daily_calorie_goal, bmr, tdee,
         profile_complete, created_at, updated_at
       ) VALUES (
-        ${userId}, ${finalName}, ${finalAge}, ${finalWeight}, ${finalHeight}, ${finalGender},
-        ${finalTargetWeight}, ${finalTimeline}, ${weeklyWeightLoss},
-        ${finalActivityLevel}, ${workoutDaysJson}, ${waterGoal},
-        ${dailyGoal}, ${bmrRounded}, ${tdee},
-        true, NOW(), NOW()
+        ${userId}, 
+        ${finalName}, 
+        ${finalAge}, 
+        ${finalWeight}, 
+        ${finalHeight}, 
+        ${finalGender},
+        ${finalTargetWeight ?? null}, 
+        ${finalTimeline ?? null}, 
+        ${weeklyWeightLoss ?? null},
+        ${finalActivityLevel ?? null}, 
+        ${workoutDaysJson ?? null}, 
+        ${waterGoal ?? null},
+        ${dailyGoal ?? null}, 
+        ${bmrRounded ?? null}, 
+        ${tdee ?? null},
+        true, 
+        NOW(), 
+        NOW()
       )
       ON CONFLICT (user_id) DO UPDATE SET
         name = EXCLUDED.name,
