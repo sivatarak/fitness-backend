@@ -789,10 +789,10 @@ app.post("/api/profile", async (req, res) => {
   try {
     const {
       userId, name, age, weight, height, gender,
-      targetWeight, timeline, activityLevel, workoutDays, dailyCalorieGoal
+      targetWeight, timeline, activityLevel, workoutDays,
+      dailyCalorieGoal, basic_completed, goals_completed, workout_completed
     } = req.body;
 
-    // Only userId is absolutely required
     if (!userId) {
       return res.status(400).json({ error: "userId required" });
     }
@@ -909,29 +909,17 @@ app.post("/api/profile", async (req, res) => {
     const profile = await sql`
       INSERT INTO user_profiles (
         user_id, name, age, weight, height, gender,
-        target_weight, timeline, weekly_weight_loss,
-        activity_level, workout_days, water_goal,
-        daily_calorie_goal, bmr, tdee,
+        target_weight, timeline, activity_level, workout_days,
+        daily_calorie_goal, bmr, tdee, water_goal,
+        basic_completed, goals_completed, workout_completed,
         profile_complete, created_at, updated_at
       ) VALUES (
-        ${userId}, 
-        ${finalName}, 
-        ${finalAge}, 
-        ${finalWeight}, 
-        ${finalHeight}, 
-        ${finalGender},
-        ${finalTargetWeight ?? null}, 
-        ${finalTimeline ?? null}, 
-        ${weeklyWeightLoss ?? null},
-        ${finalActivityLevel ?? null}, 
-        ${workoutDaysJson ?? null}, 
-        ${waterGoal ?? null},
-        ${dailyGoal ?? null}, 
-        ${bmrRounded ?? null}, 
-        ${tdee ?? null},
-        true, 
-        NOW(), 
-        NOW()
+        ${userId}, ${name}, ${age}, ${weight}, ${height}, ${gender},
+        ${targetWeight}, ${timeline}, ${activityLevel}, ${JSON.stringify(workoutDays || [])},
+        ${dailyCalorieGoal}, ${null}, ${null}, ${null},
+        ${basic_completed || false}, ${goals_completed || false}, ${workout_completed || false},
+        ${basic_completed && goals_completed && workout_completed || false},
+        NOW(), NOW()
       )
       ON CONFLICT (user_id) DO UPDATE SET
         name = EXCLUDED.name,
@@ -941,14 +929,13 @@ app.post("/api/profile", async (req, res) => {
         gender = EXCLUDED.gender,
         target_weight = EXCLUDED.target_weight,
         timeline = EXCLUDED.timeline,
-        weekly_weight_loss = EXCLUDED.weekly_weight_loss,
         activity_level = EXCLUDED.activity_level,
         workout_days = EXCLUDED.workout_days,
-        water_goal = EXCLUDED.water_goal,
         daily_calorie_goal = EXCLUDED.daily_calorie_goal,
-        bmr = EXCLUDED.bmr,
-        tdee = EXCLUDED.tdee,
-        profile_complete = true,
+        basic_completed = EXCLUDED.basic_completed,
+        goals_completed = EXCLUDED.goals_completed,
+        workout_completed = EXCLUDED.workout_completed,
+        profile_complete = EXCLUDED.basic_completed AND EXCLUDED.goals_completed AND EXCLUDED.workout_completed,
         updated_at = NOW()
       RETURNING *
     `;
