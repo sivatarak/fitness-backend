@@ -988,6 +988,8 @@ app.get("/api/profile/:userId", async (req, res) => {
 // ================================
 // 14. DASHBOARD (SINGLE ROUTE)
 // ================================
+// 14. DASHBOARD - ENHANCED FOR SMART HOME
+// ================================
 app.get("/api/dashboard/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
@@ -995,6 +997,31 @@ app.get("/api/dashboard/:userId", async (req, res) => {
     // Get profile
     const profile = await sql`SELECT * FROM user_profiles WHERE user_id = ${userId}`;
     if (profile.length === 0) return res.status(404).json({ error: "Profile not found" });
+
+    const profileData = profile[0];
+
+    // Parse workout_days from JSON string
+    let workoutDays = [];
+    if (profileData.workout_days) {
+      try {
+        workoutDays = typeof profileData.workout_days === 'string'
+          ? JSON.parse(profileData.workout_days)
+          : profileData.workout_days;
+      } catch (e) {
+        workoutDays = [];
+      }
+    }
+
+    // Get today's info
+    const today = new Date();
+    const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const todayName = dayNames[today.getDay()];
+    const isWorkoutDay = workoutDays.includes(todayName);
+
+    // Check if user is new (< 7 days)
+    const createdDate = new Date(profileData.created_at);
+    const daysSinceSignup = Math.floor((today - createdDate) / (1000 * 60 * 60 * 24));
+    const isNewUser = daysSinceSignup < 7;
 
     // Get today's food - ROUND the values
     const food = await sql`
@@ -1012,6 +1039,7 @@ app.get("/api/dashboard/:userId", async (req, res) => {
       SELECT 
         COUNT(*) as count,
         ROUND(COALESCE(SUM(duration_minutes), 0)) as duration,
+        ROUND(COALESCE(SUM(calories_burned), 0)) as calories_burned,
         ROUND(COALESCE(SUM(total_volume), 0)) as total_volume
       FROM workouts
       WHERE user_id = ${userId} AND DATE(completed_at) = CURRENT_DATE
@@ -1023,6 +1051,31 @@ app.get("/api/dashboard/:userId", async (req, res) => {
       FROM water_logs
       WHERE user_id = ${userId} AND DATE(logged_at) = CURRENT_DATE
     `;
+
+    // Get last week same day workout (for personalization)
+    const lastWeekSameDay = await sql`
+      SELECT 
+        exercise_name,
+        duration_minutes,
+        calories_burned,
+        sets,
+        DATE(completed_at) as workout_date
+      FROM workouts
+      WHERE user_id = ${userId} 
+        AND DATE(completed_at) = CURRENT_DATE - INTERVAL '7 days'
+      ORDER BY completed_at DESC
+    `;
+
+    // Group exercises from last week
+    const lastWeekExercises = lastWeekSameDay.map(w => ({
+      name: w.exercise_name,
+      duration: w.duration_minutes,
+      calories_burned: w.calories_burned,
+      sets: w.sets
+    }));
+
+    const lastWeekTotalDuration = lastWeekSameDay.reduce((sum, w) => sum + (w.duration_minutes || 0), 0);
+    const lastWeekTotalCalories = lastWeekSameDay.reduce((sum, w) => sum + (w.calories_burned || 0), 0);
 
     // Get weekly data for charts - ROUND the values
     const weekly = await sql`
@@ -1036,13 +1089,46 @@ app.get("/api/dashboard/:userId", async (req, res) => {
     `;
 
     res.json({
-      profile: profile[0],
-      today: {
-        food: food[0],
-        workout: workout[0],
-        water: { total_ml: Number(water[0].total_ml), goal: profile[0].water_goal },
-        net_calories: Number(food[0].calories)
+      user: {
+        user_id: profileData.user_id,
+        name: profileData.name,
+        created_at: profileData.created_at,
+        days_since_signup: daysSinceSignup,
+        is_new_user: isNewUser,
+        daily_calorie_goal: profileData.daily_calorie_goal,
+        water_goal: profileData.water_goal,
+        workout_days: workoutDays,
+        target_weight: profileData.target_weight,
+        current_weight: profileData.weight
       },
+      today: {
+        date: today.toISOString().split('T')[0],
+        day_name: todayName,
+        is_workout_day: isWorkoutDay,
+        food: {
+          calories: Number(food[0].calories),
+          protein: Number(food[0].protein),
+          carbs: Number(food[0].carbs),
+          fat: Number(food[0].fat)
+        },
+        workout: {
+          completed: Number(workout[0].count) > 0,
+          count: Number(workout[0].count),
+          duration: Number(workout[0].duration),
+          calories_burned: Number(workout[0].calories_burned),
+          total_volume: Number(workout[0].total_volume)
+        },
+        water: {
+          total_ml: Number(water[0].total_ml),
+          goal: profileData.water_goal
+        }
+      },
+      last_week_same_day: lastWeekSameDay.length > 0 ? {
+        date: lastWeekSameDay[0].workout_date,
+        total_duration: lastWeekTotalDuration,
+        total_calories_burned: lastWeekTotalCalories,
+        exercises: lastWeekExercises
+      } : null,
       weekly
     });
   } catch (error) {
