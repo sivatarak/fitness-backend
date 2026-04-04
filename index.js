@@ -1136,7 +1136,266 @@ app.get("/api/dashboard/:userId", async (req, res) => {
     res.status(500).json({ error: "Failed to get dashboard data" });
   }
 });
+// ================================
+// STATS ENDPOINT - COMPLETE REAL DATA
+// ================================
+app.get("/api/stats/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { period = 'week' } = req.query;
 
+    console.log(`📊 Getting stats for user: ${userId}, period: ${period}`);
+
+    // Calculate date range
+    let daysAgo = 7;
+    if (period === 'month') daysAgo = 30;
+    if (period === 'year') daysAgo = 365;
+
+    // ============================================
+    // GET USER PROFILE
+    // ============================================
+    const profile = await sql`
+      SELECT * FROM user_profiles 
+      WHERE user_id = ${userId}
+    `;
+
+    if (profile.length === 0) {
+      return res.status(404).json({ error: "Profile not found" });
+    }
+
+    const profileData = profile[0];
+
+    // ============================================
+    // WEIGHT PROGRESS
+    // ============================================
+
+    // Get first weight entry
+    const firstWeight = await sql`
+      SELECT weight, logged_at FROM weight_history
+      WHERE user_id = ${userId}
+      ORDER BY logged_at ASC
+      LIMIT 1
+    `;
+
+    const startWeight = firstWeight.length > 0
+      ? Number(firstWeight[0].weight)
+      : Number(profileData.weight) + 5; // Estimate if no history
+
+    const currentWeight = Number(profileData.weight);
+    const targetWeight = Number(profileData.target_weight);
+    const weightLost = startWeight - currentWeight;
+    const totalToLose = startWeight - targetWeight;
+    const progressPercent = totalToLose > 0 ? (weightLost / totalToLose) * 100 : 0;
+
+    // Weeks to goal (0.5kg per week average)
+    const remainingWeight = currentWeight - targetWeight;
+    const weeksToGoal = remainingWeight > 0 ? Math.ceil(remainingWeight / 0.5) : 0;
+
+    // ============================================
+    // WEEKLY DATA (Last 7 days)
+    // ============================================
+
+    const weeklyCalories = [];
+    const weeklyWorkouts = [];
+    const weeklyWater = [];
+    const weekLabels = [];
+
+    for (let i = 6; i >= 0; i--) {
+      const date = new Date();
+      date.setDate(date.getDate() - i);
+      const dateStr = date.toISOString().split('T')[0];
+
+      // Day label
+      const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+      weekLabels.push(dayNames[date.getDay()]);
+
+      // Calories eaten
+      const calories = await sql`
+        SELECT ROUND(COALESCE(SUM(calories * quantity), 0)) as total
+        FROM food_logs
+        WHERE user_id = ${userId} AND DATE(logged_at) = ${dateStr}
+      `;
+      weeklyCalories.push(Number(calories[0].total));
+
+      // Workout minutes
+      const workout = await sql`
+        SELECT ROUND(COALESCE(SUM(duration_minutes), 0)) as total
+        FROM workouts
+        WHERE user_id = ${userId} AND DATE(completed_at) = ${dateStr}
+      `;
+      weeklyWorkouts.push(Number(workout[0].total));
+
+      // Water intake
+      const water = await sql`
+        SELECT ROUND(COALESCE(SUM(amount_ml), 0)) as total
+        FROM water_logs
+        WHERE user_id = ${userId} AND DATE(logged_at) = ${dateStr}
+      `;
+      weeklyWater.push(Number((water[0].total / 1000).toFixed(1))); // Convert to liters
+    }
+
+    // ============================================
+    // QUICK STATS
+    // ============================================
+
+    // Workout days (days with workouts)
+    const workoutDaysCount = weeklyWorkouts.filter(w => w > 0).length;
+    const restDaysCount = 7 - workoutDaysCount;
+
+    // Total calories burned (6 kcal/min estimate)
+    const totalCaloriesBurned = Math.round(
+      weeklyWorkouts.reduce((sum, mins) => sum + (mins * 6), 0)
+    );
+
+    // Total water
+    const totalWaterDrunk = Number(weeklyWater.reduce((sum, liters) => sum + liters, 0).toFixed(1));
+
+    // ============================================
+    // TOP EXERCISES (Last 7 days)
+    // ============================================
+
+    const topExercises = await sql`
+      SELECT 
+        exercise_name,
+        COUNT(*) as total_sets
+      FROM workouts
+      WHERE user_id = ${userId} 
+        AND completed_at >= NOW() - INTERVAL '7 days'
+      GROUP BY exercise_name
+      ORDER BY total_sets DESC
+      LIMIT 5
+    `;
+
+    const topExercisesList = topExercises.map(ex => ({
+      name: ex.exercise_name,
+      sets: Number(ex.total_sets)
+    }));
+
+    // ============================================
+    // STREAKS
+    // ============================================
+
+    // Workout Streak
+    let workoutStreak = 0;
+    let checkDate = new Date();
+    while (workoutStreak < 365) {
+      const dateStr = checkDate.toISOString().split('T')[0];
+      const hasWorkout = await sql`
+        SELECT COUNT(*) as count
+        FROM workouts
+        WHERE user_id = ${userId} AND DATE(completed_at) = ${dateStr}
+      `;
+
+      if (Number(hasWorkout[0].count) > 0) {
+        workoutStreak++;
+        checkDate.setDate(checkDate.getDate() - 1);
+      } else {
+        break;
+      }
+    }
+
+    // Water Streak
+    let waterStreak = 0;
+    checkDate = new Date();
+    const waterGoal = profileData.water_goal || 3000;
+    while (waterStreak < 365) {
+      const dateStr = checkDate.toISOString().split('T')[0];
+      const waterAmount = await sql`
+        SELECT ROUND(COALESCE(SUM(amount_ml), 0)) as total
+        FROM water_logs
+        WHERE user_id = ${userId} AND DATE(logged_at) = ${dateStr}
+      `;
+
+      if (Number(waterAmount[0].total) >= waterGoal) {
+        waterStreak++;
+        checkDate.setDate(checkDate.getDate() - 1);
+      } else {
+        break;
+      }
+    }
+
+    // Food Log Streak
+    let foodLogStreak = 0;
+    checkDate = new Date();
+    while (foodLogStreak < 365) {
+      const dateStr = checkDate.toISOString().split('T')[0];
+      const hasFood = await sql`
+        SELECT COUNT(*) as count
+        FROM food_logs
+        WHERE user_id = ${userId} AND DATE(logged_at) = ${dateStr}
+      `;
+
+      if (Number(hasFood[0].count) > 0) {
+        foodLogStreak++;
+        checkDate.setDate(checkDate.getDate() - 1);
+      } else {
+        break;
+      }
+    }
+
+    // ============================================
+    // TOTAL STATS (for period)
+    // ============================================
+
+    const totalStats = await sql`
+      SELECT 
+        ROUND(COALESCE(SUM(duration_minutes), 0)) as total_minutes,
+        ROUND(COALESCE(SUM(calories_burned), 0)) as total_calories
+      FROM workouts
+      WHERE user_id = ${userId} 
+        AND completed_at >= NOW() - INTERVAL '${sql.unsafe(daysAgo.toString())} days'
+    `;
+
+    // ============================================
+    // RESPONSE
+    // ============================================
+
+    res.json({
+      period,
+      weight_progress: {
+        start_weight: Number(startWeight.toFixed(1)),
+        current_weight: currentWeight,
+        target_weight: targetWeight,
+        weight_lost: Number(weightLost.toFixed(1)),
+        progress_percent: Math.min(Math.round(progressPercent), 100),
+        weeks_to_goal: weeksToGoal
+      },
+      weekly_charts: {
+        calories: weeklyCalories,
+        workouts: weeklyWorkouts,
+        water: weeklyWater,
+        labels: weekLabels,
+        averages: {
+          calories: Math.round(weeklyCalories.reduce((a, b) => a + b, 0) / 7),
+          workout_mins: Math.round(weeklyWorkouts.reduce((a, b) => a + b, 0)),
+          water_liters: Number((weeklyWater.reduce((a, b) => a + b, 0) / 7).toFixed(1))
+        }
+      },
+      quick_stats: {
+        workout_days: workoutDaysCount,
+        rest_days: restDaysCount,
+        total_calories_burned: totalCaloriesBurned,
+        total_water_liters: totalWaterDrunk
+      },
+      top_exercises: topExercisesList,
+      streaks: {
+        workout_streak: workoutStreak,
+        water_streak: waterStreak,
+        food_log_streak: foodLogStreak
+      },
+      total_stats: {
+        total_active_minutes: Number(totalStats[0].total_minutes),
+        total_calories_burned: Number(totalStats[0].total_calories)
+      }
+    });
+
+    console.log('✅ Stats sent successfully');
+
+  } catch (error) {
+    console.error("❌ Stats error:", error.message);
+    res.status(500).json({ error: "Failed to get stats data" });
+  }
+});
 // ================================
 // 15. HEALTH CHECK
 // ================================
