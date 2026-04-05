@@ -1287,7 +1287,7 @@ app.get("/api/stats/:userId", async (req, res) => {
 
     const startWeight = firstWeight[0]?.weight
       ? Number(firstWeight[0].weight)
-      : Number(profileData.weight) + 5;
+      : Number(profileData.weight);
 
     const currentWeight = Number(profileData.weight);
     const targetWeight = Number(profileData.target_weight);
