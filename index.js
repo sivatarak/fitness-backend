@@ -293,6 +293,63 @@ async function searchIndianFoods(query) {
 }
 
 // ================================
+// STREAK HELPERS
+// ================================
+
+// 🔥 Workout (with rest days)
+// ================================
+// STREAK HELPERS
+// ================================
+
+// 🏋️ Workout (respects rest days)
+function calculateWorkoutStreak(workoutDates, schedule) {
+  if (!workoutDates.length) return 0;
+
+  const completed = new Set(workoutDates);
+  let streak = 0;
+  let current = new Date();
+
+  while (true) {
+    const dayName = current.toLocaleDateString("en-US", { weekday: "short" });
+    const dateStr = current.toISOString().split("T")[0];
+
+    if (schedule.includes(dayName)) {
+      if (completed.has(dateStr)) {
+        streak++;
+      } else {
+        break;
+      }
+    }
+
+    current.setDate(current.getDate() - 1);
+  }
+
+  return streak;
+}
+
+// 💧🍽️ Strict streak (daily required)
+function calculateStrictStreak(dates) {
+  if (!dates.length) return 0;
+
+  const set = new Set(dates);
+  let streak = 0;
+  let current = new Date();
+
+  while (true) {
+    const dateStr = current.toISOString().split("T")[0];
+
+    if (set.has(dateStr)) {
+      streak++;
+      current.setDate(current.getDate() - 1);
+    } else {
+      break;
+    }
+  }
+
+  return streak;
+}
+
+// ================================
 // MAIN FOOD SEARCH ROUTE
 // ================================
 // ============================================
@@ -1138,12 +1195,61 @@ app.get("/api/dashboard/:userId", async (req, res) => {
 });
 // ================================
 // STATS ENDPOINT - COMPLETE REAL DATA
+
 // ================================
+// STREAK HELPERS
 // ================================
-// STATS ENDPOINT - FIXED & STABLE
+
+// 🏋️ Workout (respects rest days)
+function calculateWorkoutStreak(workoutDates, schedule) {
+  if (!workoutDates.length) return 0;
+
+  const completed = new Set(workoutDates);
+  let streak = 0;
+  let current = new Date();
+
+  while (true) {
+    const dayName = current.toLocaleDateString("en-US", { weekday: "short" });
+    const dateStr = current.toISOString().split("T")[0];
+
+    if (schedule.includes(dayName)) {
+      if (completed.has(dateStr)) {
+        streak++;
+      } else {
+        break;
+      }
+    }
+
+    current.setDate(current.getDate() - 1);
+  }
+
+  return streak;
+}
+
+// 💧🍽️ Strict streak (daily required)
+function calculateStrictStreak(dates) {
+  if (!dates.length) return 0;
+
+  const set = new Set(dates);
+  let streak = 0;
+  let current = new Date();
+
+  while (true) {
+    const dateStr = current.toISOString().split("T")[0];
+
+    if (set.has(dateStr)) {
+      streak++;
+      current.setDate(current.getDate() - 1);
+    } else {
+      break;
+    }
+  }
+
+  return streak;
+}
+
 // ================================
-// ================================
-// STATS ENDPOINT - FINAL WORKING
+// STATS API
 // ================================
 app.get("/api/stats/:userId", async (req, res) => {
   try {
@@ -1163,7 +1269,7 @@ app.get("/api/stats/:userId", async (req, res) => {
       SELECT * FROM user_profiles WHERE user_id = ${userId}
     `;
 
-    if (profile.length === 0) {
+    if (!profile.length) {
       return res.status(404).json({ error: "Profile not found" });
     }
 
@@ -1197,7 +1303,7 @@ app.get("/api/stats/:userId", async (req, res) => {
       remainingWeight > 0 ? Math.ceil(remainingWeight / 0.5) : 0;
 
     // ================================
-    // FOOD DATA
+    // FOOD
     // ================================
     const foodData = await sql`
       SELECT date, SUM(calories * quantity) as total
@@ -1208,7 +1314,7 @@ app.get("/api/stats/:userId", async (req, res) => {
     `;
 
     // ================================
-    // WORKOUT DATA
+    // WORKOUT
     // ================================
     const workoutData = await sql`
       SELECT DATE(completed_at) as date, SUM(duration_minutes) as total
@@ -1219,7 +1325,7 @@ app.get("/api/stats/:userId", async (req, res) => {
     `;
 
     // ================================
-    // WATER DATA
+    // WATER
     // ================================
     const waterData = await sql`
       SELECT date, SUM(amount_ml) as total
@@ -1230,7 +1336,7 @@ app.get("/api/stats/:userId", async (req, res) => {
     `;
 
     // ================================
-    // MAP DATA
+    // MAPS
     // ================================
     const foodMap = Object.fromEntries(
       foodData.map(d => [d.date, Number(d.total)])
@@ -1254,8 +1360,8 @@ app.get("/api/stats/:userId", async (req, res) => {
       d.setDate(d.getDate() - i);
       const dateStr = d.toISOString().split("T")[0];
 
-      const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-      labels.push(dayNames[d.getDay()]);
+      const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+      labels.push(days[d.getDay()]);
 
       weeklyCalories.push(foodMap[dateStr] || 0);
       weeklyWorkouts.push(workoutMap[dateStr] || 0);
@@ -1305,6 +1411,44 @@ app.get("/api/stats/:userId", async (req, res) => {
     `;
 
     // ================================
+    // STREAK DATA
+    // ================================
+    const workoutDates = await sql`
+      SELECT DISTINCT DATE(completed_at) as date
+      FROM workouts
+      WHERE user_id = ${userId}
+    `;
+
+    const waterDates = await sql`
+      SELECT DISTINCT date
+      FROM water_logs
+      WHERE user_id = ${userId}
+    `;
+
+    const foodDates = await sql`
+      SELECT DISTINCT date
+      FROM food_logs
+      WHERE user_id = ${userId}
+    `;
+
+    const schedule =
+      profileData.workout_schedule ||
+      ["Mon", "Tue", "Wed", "Thu", "Fri"];
+
+    const workoutStreak = calculateWorkoutStreak(
+      workoutDates.map(d => d.date),
+      schedule
+    );
+
+    const waterStreak = calculateStrictStreak(
+      waterDates.map(d => d.date)
+    );
+
+    const foodStreak = calculateStrictStreak(
+      foodDates.map(d => d.date)
+    );
+
+    // ================================
     // RESPONSE
     // ================================
     res.json({
@@ -1328,6 +1472,11 @@ app.get("/api/stats/:userId", async (req, res) => {
         rest_days: restDays,
         total_calories_burned: Math.round(totalCaloriesBurned),
         total_water_liters: totalWater
+      },
+      streaks: {
+        workout_streak: workoutStreak,
+        water_streak: waterStreak,
+        food_log_streak: foodStreak
       },
       top_exercises: topExercises.map(e => ({
         name: e.exercise_name,
