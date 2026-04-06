@@ -743,6 +743,61 @@ app.get("/api/workouts/:userId", async (req, res) => {
   }
 });
 
+
+// ================================
+// CALORIES BURNED - USING EXERCISE MET VALUE ONLY
+// ================================
+app.get("/api/calories-burned", async (req, res) => {
+  try {
+    const { exerciseId, weight, duration } = req.query;
+    
+    // Validate required parameters
+    if (!exerciseId || !weight || !duration) {
+      return res.status(400).json({ 
+        error: "exerciseId, weight, and duration are required" 
+      });
+    }
+
+    // Get exercise from database
+    const exercise = await sql`
+      SELECT name, met_value 
+      FROM exercises 
+      WHERE id = ${exerciseId}
+    `;
+    
+    // If exercise not found, return 404
+    if (exercise.length === 0) {
+      return res.status(404).json({ 
+        error: `Exercise with id ${exerciseId} not found` 
+      });
+    }
+
+    const met = parseFloat(exercise[0].met_value);
+    const weightKg = parseFloat(weight);
+    const durationHours = parseFloat(duration) / 60;
+    
+    // Validate numeric values
+    if (isNaN(met) || isNaN(weightKg) || isNaN(durationHours)) {
+      return res.status(400).json({ 
+        error: "Invalid numeric values for met, weight, or duration" 
+      });
+    }
+    
+    const caloriesBurned = Math.round(met * weightKg * durationHours);
+    
+    res.json({
+      exercise_name: exercise[0].name,
+      met_value: met,
+      weight_kg: weightKg,
+      duration_minutes: parseFloat(duration),
+      calories_burned: caloriesBurned
+    });
+    
+  } catch (error) {
+    console.error("Calories calculation error:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
 // ================================
 // 8. WATER TRACKING
 // ================================
