@@ -1017,7 +1017,7 @@ app.post("/api/profile", async (req, res) => {
       workoutDays: finalWorkoutDays
     });
 
-    // Upsert profile - explicitly handle NULL values with ?? null
+    // ✅ UPDATED: Now saving ALL calculated values
     const profile = await sql`
       INSERT INTO user_profiles (
         user_id, name, age, weight, height, gender,
@@ -1026,11 +1026,11 @@ app.post("/api/profile", async (req, res) => {
         basic_completed, goals_completed, workout_completed,
         profile_complete, created_at, updated_at
       ) VALUES (
-        ${userId}, ${name}, ${age}, ${weight}, ${height}, ${gender},
-        ${targetWeight}, ${timeline}, ${activityLevel}, ${JSON.stringify(workoutDays || [])},
-        ${dailyCalorieGoal}, ${null}, ${null}, ${null},
+        ${userId}, ${finalName}, ${finalAge}, ${finalWeight}, ${finalHeight}, ${finalGender},
+        ${finalTargetWeight}, ${finalTimeline}, ${finalActivityLevel}, ${workoutDaysJson},
+        ${dailyGoal}, ${bmrRounded}, ${tdee}, ${waterGoal},
         ${basic_completed || false}, ${goals_completed || false}, ${workout_completed || false},
-        ${basic_completed && goals_completed && workout_completed || false},
+        ${(basic_completed && goals_completed && workout_completed) || false},
         NOW(), NOW()
       )
       ON CONFLICT (user_id) DO UPDATE SET
@@ -1044,6 +1044,9 @@ app.post("/api/profile", async (req, res) => {
         activity_level = EXCLUDED.activity_level,
         workout_days = EXCLUDED.workout_days,
         daily_calorie_goal = EXCLUDED.daily_calorie_goal,
+        bmr = EXCLUDED.bmr,
+        tdee = EXCLUDED.tdee,
+        water_goal = EXCLUDED.water_goal,
         basic_completed = EXCLUDED.basic_completed,
         goals_completed = EXCLUDED.goals_completed,
         workout_completed = EXCLUDED.workout_completed,
