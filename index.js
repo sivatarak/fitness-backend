@@ -730,10 +730,10 @@ app.get("/api/workouts/:userId", async (req, res) => {
     let query = sql`SELECT * FROM workouts WHERE user_id = ${userId}`;
 
     if (days) {
-      query = sql`${query} AND completed_at >= NOW() - INTERVAL '${days} days'`;
+      query = sql`${query} AND completed_at >= NOW() - (${days} * INTERVAL '1 day')`;
     }
 
-    query = sql`${query} ORDER BY completed_at DESC LIMIT ${limit}`;
+    query = sql`${query} ORDER BY completed_at DESC LIMIT ${Number(limit)}`;
 
     const workouts = await query;
     res.json(workouts);
