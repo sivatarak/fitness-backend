@@ -727,22 +727,32 @@ app.get("/api/workouts/:userId", async (req, res) => {
     const { userId } = req.params;
     const { limit = 50, days } = req.query;
 
-    let query = sql`SELECT * FROM workouts WHERE user_id = ${userId}`;
+    // base query
+    let workouts;
 
     if (days) {
-      query = sql`${query} AND completed_at >= NOW() - (${days} * INTERVAL '1 day')`;
+      workouts = await sql`
+        SELECT * FROM workouts
+        WHERE user_id = ${userId}
+        AND completed_at >= NOW() - (${days} * INTERVAL '1 day')
+        ORDER BY completed_at DESC
+        LIMIT ${Number(limit)}
+      `;
+    } else {
+      workouts = await sql`
+        SELECT * FROM workouts
+        WHERE user_id = ${userId}
+        ORDER BY completed_at DESC
+        LIMIT ${Number(limit)}
+      `;
     }
 
-    query = sql`${query} ORDER BY completed_at DESC LIMIT ${Number(limit)}`;
-
-    const workouts = await query;
     res.json(workouts);
   } catch (error) {
     console.log("Get workouts error:", error.message);
     res.status(500).json({ error: "Failed to get workouts" });
   }
 });
-
 
 // ================================
 // CALORIES BURNED - USING EXERCISE MET VALUE ONLY
