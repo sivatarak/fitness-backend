@@ -489,6 +489,8 @@ app.post("/api/food/log", async (req, res) => {
   try {
     const { userId, foodName, calories, protein, carbs, fat, mealType, quantity, foodSource } = req.body;
 
+    console.log("Food log request:", req.body); // ← ADD THIS to see what's coming in
+
     if (!userId || !foodName || !calories) {
       return res.status(400).json({ error: "userId, foodName, and calories required" });
     }
@@ -504,16 +506,20 @@ app.post("/api/food/log", async (req, res) => {
       RETURNING *
     `;
 
-    // Learn from this selection
-    await sql`
-      INSERT INTO search_intelligence (
-        original_query, selected_result_name, calories, protein, carbs, fat, food_source
-      ) VALUES (
-        ${foodName.toLowerCase()}, ${foodName}, ${calories}, ${protein || 0}, ${carbs || 0}, ${fat || 0}, ${foodSource || 'manual'}
-      )
-      ON CONFLICT (original_query) DO UPDATE
-      SET times_selected = search_intelligence.times_selected + 1, last_searched_at = NOW()
-    `;
+    // ← Separate try/catch so it never breaks food logging
+    try {
+      await sql`
+        INSERT INTO search_intelligence (
+          original_query, selected_result_name, calories, protein, carbs, fat, food_source
+        ) VALUES (
+          ${foodName.toLowerCase()}, ${foodName}, ${calories}, ${protein || 0}, ${carbs || 0}, ${fat || 0}, ${foodSource || 'manual'}
+        )
+        ON CONFLICT (original_query) DO UPDATE
+        SET times_selected = search_intelligence.times_selected + 1, last_searched_at = NOW()
+      `;
+    } catch (intelligenceError) {
+      console.log("search_intelligence insert failed (non-critical):", intelligenceError.message);
+    }
 
     res.json(result[0]);
   } catch (error) {
@@ -521,7 +527,6 @@ app.post("/api/food/log", async (req, res) => {
     res.status(500).json({ error: "Failed to log food" });
   }
 });
-
 // ================================
 // 3. GET TODAY'S FOOD LOGS
 // ================================
@@ -760,11 +765,11 @@ app.get("/api/workouts/:userId", async (req, res) => {
 app.get("/api/calories-burned", async (req, res) => {
   try {
     const { exerciseId, weight, duration } = req.query;
-    
+
     // Validate required parameters
     if (!exerciseId || !weight || !duration) {
-      return res.status(400).json({ 
-        error: "exerciseId, weight, and duration are required" 
+      return res.status(400).json({
+        error: "exerciseId, weight, and duration are required"
       });
     }
 
@@ -774,27 +779,27 @@ app.get("/api/calories-burned", async (req, res) => {
       FROM exercises 
       WHERE id = ${exerciseId}
     `;
-    
+
     // If exercise not found, return 404
     if (exercise.length === 0) {
-      return res.status(404).json({ 
-        error: `Exercise with id ${exerciseId} not found` 
+      return res.status(404).json({
+        error: `Exercise with id ${exerciseId} not found`
       });
     }
 
     const met = parseFloat(exercise[0].met_value);
     const weightKg = parseFloat(weight);
     const durationHours = parseFloat(duration) / 60;
-    
+
     // Validate numeric values
     if (isNaN(met) || isNaN(weightKg) || isNaN(durationHours)) {
-      return res.status(400).json({ 
-        error: "Invalid numeric values for met, weight, or duration" 
+      return res.status(400).json({
+        error: "Invalid numeric values for met, weight, or duration"
       });
     }
-    
+
     const caloriesBurned = Math.round(met * weightKg * durationHours);
-    
+
     res.json({
       exercise_name: exercise[0].name,
       met_value: met,
@@ -802,7 +807,7 @@ app.get("/api/calories-burned", async (req, res) => {
       duration_minutes: parseFloat(duration),
       calories_burned: caloriesBurned
     });
-    
+
   } catch (error) {
     console.error("Calories calculation error:", error);
     res.status(500).json({ error: "Internal server error" });
@@ -1576,7 +1581,7 @@ app.get("/api/history/workouts/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
     const { days = 7, date } = req.query;
-    
+
     let query;
     if (date) {
       // Get workouts for specific date
@@ -1595,7 +1600,7 @@ app.get("/api/history/workouts/:userId", async (req, res) => {
         ORDER BY completed_at DESC
       `;
     }
-    
+
     const workouts = await query;
     res.json(workouts);
   } catch (error) {
@@ -1609,7 +1614,7 @@ app.get("/api/history/food/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
     const { days = 7, date } = req.query;
-    
+
     let query;
     if (date) {
       query = sql`
@@ -1626,7 +1631,7 @@ app.get("/api/history/food/:userId", async (req, res) => {
         ORDER BY logged_at DESC
       `;
     }
-    
+
     const foodLogs = await query;
     res.json(foodLogs);
   } catch (error) {
@@ -1640,7 +1645,7 @@ app.get("/api/history/water/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
     const { days = 7, date } = req.query;
-    
+
     let query;
     if (date) {
       query = sql`
@@ -1657,7 +1662,7 @@ app.get("/api/history/water/:userId", async (req, res) => {
         ORDER BY logged_at DESC
       `;
     }
-    
+
     const waterLogs = await query;
     res.json(waterLogs);
   } catch (error) {
@@ -1671,14 +1676,14 @@ app.get("/api/history/weight/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
     const { days = 30 } = req.query;
-    
+
     const weightHistory = await sql`
       SELECT * FROM weight_history
       WHERE user_id = ${userId}
         AND logged_at >= NOW() - (${days} * INTERVAL '1 day')
       ORDER BY logged_at ASC
     `;
-    
+
     res.json(weightHistory);
   } catch (error) {
     console.log("Get weight history error:", error.message);
@@ -1690,24 +1695,24 @@ app.get("/api/history/weight/:userId", async (req, res) => {
 app.post("/api/history/weight", async (req, res) => {
   try {
     const { userId, weight, notes } = req.body;
-    
+
     if (!userId || !weight) {
       return res.status(400).json({ error: "userId and weight required" });
     }
-    
+
     const result = await sql`
       INSERT INTO weight_history (user_id, weight, notes, logged_at)
       VALUES (${userId}, ${weight}, ${notes || ''}, NOW())
       RETURNING *
     `;
-    
+
     // Update user profile current weight
     await sql`
       UPDATE user_profiles 
       SET weight = ${weight}, updated_at = NOW()
       WHERE user_id = ${userId}
     `;
-    
+
     res.json(result[0]);
   } catch (error) {
     console.log("Log weight error:", error.message);
@@ -1719,7 +1724,7 @@ app.post("/api/history/weight", async (req, res) => {
 app.get("/api/history/weekly/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
-    
+
     const weeklyData = await sql`
       SELECT 
         DATE_TRUNC('week', completed_at) as week_start,
@@ -1732,7 +1737,7 @@ app.get("/api/history/weekly/:userId", async (req, res) => {
       GROUP BY DATE_TRUNC('week', completed_at)
       ORDER BY week_start DESC
     `;
-    
+
     res.json(weeklyData);
   } catch (error) {
     console.log("Get weekly summary error:", error.message);
