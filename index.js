@@ -542,14 +542,14 @@ app.get("/api/food/logs/:userId", async (req, res) => {
     `;
 
     const totals = await sql`
-      SELECT 
-        COALESCE(SUM(calories * quantity), 0) as total_calories,
-        COALESCE(SUM(protein * quantity), 0) as total_protein,
-        COALESCE(SUM(carbs * quantity), 0) as total_carbs,
-        COALESCE(SUM(fat * quantity), 0) as total_fat
-      FROM food_logs
-      WHERE user_id = ${userId} AND DATE(logged_at) = CURRENT_DATE
-    `;
+  SELECT 
+    COALESCE(SUM(calories), 0) as total_calories,
+    COALESCE(SUM(protein), 0) as total_protein,
+    COALESCE(SUM(carbs), 0) as total_carbs,
+    COALESCE(SUM(fat), 0) as total_fat
+  FROM food_logs
+  WHERE user_id = ${userId} AND DATE(logged_at) = CURRENT_DATE
+`;
 
     res.json({ logs, totals: totals[0] });
   } catch (error) {
