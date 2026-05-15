@@ -833,6 +833,28 @@ app.post("/api/water", async (req, res) => {
   }
 });
 
+
+app.delete("/api/food/log/:logId", async (req, res) => {
+  try {
+    const { logId } = req.params;
+
+    const result = await sql`
+      DELETE FROM food_logs 
+      WHERE id = ${logId}
+      RETURNING *
+    `;
+
+    if (result.length === 0) {
+      return res.status(404).json({ error: "Food log not found" });
+    }
+
+    res.json({ success: true, deleted: result[0] });
+  } catch (error) {
+    console.log("Delete food log error:", error.message);
+    res.status(500).json({ error: "Failed to delete food log" });
+  }
+});
+
 // ================================
 // 9. GET TODAY'S WATER
 // ================================
