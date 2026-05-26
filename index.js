@@ -855,6 +855,25 @@ app.delete("/api/food/log/:logId", async (req, res) => {
   }
 });
 
+// DELETE all logs for today
+app.delete("/api/water/reset/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    await sql`
+      DELETE FROM water_logs
+      WHERE user_id = ${userId}
+      AND DATE(logged_at) = CURRENT_DATE
+    `;
+
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: "Failed to reset water" });
+  }
+});
+
+
+
 // ================================
 // 9. GET TODAY'S WATER
 // ================================
@@ -872,6 +891,40 @@ app.get("/api/water/:userId", async (req, res) => {
   } catch (error) {
     console.log("Get water error:", error.message);
     res.status(500).json({ error: "Failed to get water intake" });
+  }
+});
+
+// DELETE specific log by id
+app.delete("/api/water/:logId", async (req, res) => {
+  try {
+    const { logId } = req.params;
+    const { userId } = req.body;
+
+    const result = await sql`
+      DELETE FROM water_logs
+      WHERE id = ${logId} AND user_id = ${userId}
+      RETURNING *
+    `;
+
+    res.json({ deleted: result[0] });
+  } catch (error) {
+    res.status(500).json({ error: "Failed to delete log" });
+  }
+});
+// DELETE all logs for today
+app.delete("/api/water/reset/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    await sql`
+      DELETE FROM water_logs
+      WHERE user_id = ${userId}
+      AND DATE(logged_at) = CURRENT_DATE
+    `;
+
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: "Failed to reset water" });
   }
 });
 
