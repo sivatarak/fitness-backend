@@ -1623,18 +1623,15 @@ app.get("/api/stats/:userId", async (req, res) => {
     const weightLost = startWeight - currentWeight;
     const totalToLose = startWeight - targetWeight;
 
-    const progressPercent =
-      totalToLose > 0 ? (weightLost / totalToLose) * 100 : 0;
-
+    const progressPercent = totalToLose > 0 ? (weightLost / totalToLose) * 100 : 0;
     const remainingWeight = currentWeight - targetWeight;
-    const weeksToGoal =
-      remainingWeight > 0 ? Math.ceil(remainingWeight / 0.5) : 0;
+    const weeksToGoal = remainingWeight > 0 ? Math.ceil(remainingWeight / 0.5) : 0;
 
     // ================================
     // FOOD
     // ================================
     const foodData = await sql`
-      SELECT date, SUM(calories * quantity) as total
+      SELECT date::text, SUM(calories * quantity) as total
       FROM food_logs
       WHERE user_id = ${userId}
       AND date >= CURRENT_DATE - (${daysAgo} * INTERVAL '1 day')
@@ -1645,7 +1642,7 @@ app.get("/api/stats/:userId", async (req, res) => {
     // WORKOUT
     // ================================
     const workoutData = await sql`
-      SELECT DATE(completed_at) as date, SUM(duration_minutes) as total
+      SELECT DATE(completed_at)::text as date, SUM(duration_minutes) as total
       FROM workouts
       WHERE user_id = ${userId}
       AND completed_at >= NOW() - (${daysAgo} * INTERVAL '1 day')
@@ -1653,70 +1650,43 @@ app.get("/api/stats/:userId", async (req, res) => {
     `;
 
     // ================================
-    // WATER
+    // WATER — all queries together ✅
     // ================================
-    const waterData = await sql`
-      SELECT date, SUM(amount_ml) as total
+    const waterLogsData = await sql`
+      SELECT date::text, SUM(amount_ml) as total
       FROM water_logs
       WHERE user_id = ${userId}
       AND date >= CURRENT_DATE - (${daysAgo} * INTERVAL '1 day')
       GROUP BY date
     `;
 
-    // ================================
-    // MAPS
-    // ================================
-    const foodMap = Object.fromEntries(
-      foodData.map(d => [d.date, Number(d.total)])
-    );
-
-    const workoutMap = Object.fromEntries(
-      workoutData.map(d => [d.date, Number(d.total)])
-    );
-
-    const waterMap = {
-      ...Object.fromEntries(
-        waterDailyData.map(d => [d.date, Number(d.total)])
-      ),
-      ...Object.fromEntries(
-        waterLogsData.map(d => [d.date, Number(d.total)])
-      ),
-    };
-
-    const weeklyCalories = [];
-    const weeklyWorkouts = [];
-    const weeklyWater = [];
-    const labels = [];
-
-    for (let i = daysAgo - 1; i >= 0; i--) {
-      const d = new Date();
-      d.setDate(d.getDate() - i);
-      const dateStr = d.toISOString().split("T")[0];
-
-      const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-      labels.push(days[d.getDay()]);
-
-      weeklyCalories.push(foodMap[dateStr] || 0);
-      weeklyWorkouts.push(workoutMap[dateStr] || 0);
-
-      const waterLiters = (waterMap[dateStr] || 0) / 1000;
-      weeklyWater.push(Number(waterLiters.toFixed(1)));
-    }
+    const waterDailyData = await sql`
+      SELECT date::text, total_ml as total
+      FROM water_daily
+      WHERE user_id = ${userId}
+      AND date >= CURRENT_DATE - (${daysAgo} * INTERVAL '1 day')
+    `;
 
     // ================================
-    // QUICK STATS
+    // STREAK DATES
     // ================================
-    const workoutDays = weeklyWorkouts.filter(v => v > 0).length;
-    const restDays = daysAgo - workoutDays;
+    const workoutDates = await sql`
+      SELECT DISTINCT DATE(completed_at)::text as date
+      FROM workouts
+      WHERE user_id = ${userId}
+    `;
 
-    const totalCaloriesBurned = weeklyWorkouts.reduce(
-      (sum, mins) => sum + mins * 6,
-      0
-    );
+    const waterDates = await sql`
+      SELECT DISTINCT date::text as date FROM water_daily WHERE user_id = ${userId}
+      UNION
+      SELECT DISTINCT date::text as date FROM water_logs  WHERE user_id = ${userId}
+    `;
 
-    const totalWater = Number(
-      weeklyWater.reduce((a, b) => a + b, 0).toFixed(1)
-    );
+    const foodDates = await sql`
+      SELECT DISTINCT date::text as date
+      FROM food_logs
+      WHERE user_id = ${userId}
+    `;
 
     // ================================
     // TOP EXERCISES
@@ -1732,79 +1702,73 @@ app.get("/api/stats/:userId", async (req, res) => {
     `;
 
     // ================================
-    // TOTAL STATS
+    // TOTAL WORKOUT STATS
     // ================================
     const totalStats = await sql`
-      SELECT 
+      SELECT
         COALESCE(SUM(duration_minutes), 0) as total_minutes,
-        COALESCE(SUM(calories_burned), 0) as total_calories
+        COALESCE(SUM(calories_burned),  0) as total_calories
       FROM workouts
       WHERE user_id = ${userId}
       AND completed_at >= NOW() - (${daysAgo} * INTERVAL '1 day')
     `;
 
     // ================================
-    // STREAK DATA
+    // BUILD MAPS
     // ================================
-    const workoutDates = await sql`
-      SELECT DISTINCT DATE(completed_at) as date
-      FROM workouts
-      WHERE user_id = ${userId}
-    `;
+    const foodMap = Object.fromEntries(
+      foodData.map(d => [d.date, Number(d.total)])
+    );
+
+    const workoutMap = Object.fromEntries(
+      workoutData.map(d => [d.date, Number(d.total)])
+    );
+
+    // water_daily takes priority; water_logs fills in missing dates
+    const waterFromLogs = Object.fromEntries(waterLogsData.map(d => [d.date, Number(d.total)]));
+    const waterFromDaily = Object.fromEntries(waterDailyData.map(d => [d.date, Number(d.total)]));
+    const waterMap = { ...waterFromLogs, ...waterFromDaily }; // daily overwrites logs if both exist
 
     // ================================
-    // WATER
+    // BUILD CHART ARRAYS
     // ================================
-    const waterLogsData = await sql`
-  SELECT date::text, SUM(amount_ml) as total
-  FROM water_logs
-  WHERE user_id = ${userId}
-  AND date >= CURRENT_DATE - (${daysAgo} * INTERVAL '1 day')
-  GROUP BY date
-`;
+    const weeklyCalories = [];
+    const weeklyWorkouts = [];
+    const weeklyWater = [];
+    const labels = [];
 
-    const waterDailyData = await sql`
-  SELECT date::text, total_ml as total
-  FROM water_daily
-  WHERE user_id = ${userId}
-  AND date >= CURRENT_DATE - (${daysAgo} * INTERVAL '1 day')
-`;
+    for (let i = daysAgo - 1; i >= 0; i--) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      const dateStr = d.toISOString().split("T")[0];
+      const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+      labels.push(dayNames[d.getDay()]);
+      weeklyCalories.push(foodMap[dateStr] || 0);
+      weeklyWorkouts.push(workoutMap[dateStr] || 0);
+      weeklyWater.push(Number(((waterMap[dateStr] || 0) / 1000).toFixed(1)));
+    }
+
     // ================================
-    // STREAK -  existing waterDates
+    // QUICK STATS
     // ================================
-    const waterDates = await sql`
-  SELECT DISTINCT date::text as date
-  FROM water_daily
-  WHERE user_id = ${userId}
-  UNION
-  SELECT DISTINCT date::text as date
-  FROM water_logs
-  WHERE user_id = ${userId}
-`;
+    const workoutDaysCount = weeklyWorkouts.filter(v => v > 0).length;
+    const restDays = daysAgo - workoutDaysCount;
+    const totalCaloriesBurned = weeklyWorkouts.reduce((sum, mins) => sum + mins * 6, 0);
+    const totalWater = Number(weeklyWater.reduce((a, b) => a + b, 0).toFixed(1));
 
-
-    const foodDates = await sql`
-      SELECT DISTINCT date
-      FROM food_logs
-      WHERE user_id = ${userId}
-    `;
-
-    const schedule =
-      profileData.workout_schedule ||
-      ["Mon", "Tue", "Wed", "Thu", "Fri"];
+    // ================================
+    // STREAKS
+    // ================================
+    const schedule = profileData.workout_schedule || ["Mon", "Tue", "Wed", "Thu", "Fri"];
 
     const workoutStreak = calculateWorkoutStreak(
       workoutDates.map(d => d.date),
       schedule
     );
 
-    const waterStreak = calculateStrictStreak(
-      waterDates.map(d => d.date)
-    );
-
-    const foodStreak = calculateStrictStreak(
-      foodDates.map(d => d.date)
-    );
+    const waterStreak = calculateStrictStreak(waterDates.map(d => d.date));
+    const foodStreak = calculateStrictStreak(foodDates.map(d => d.date));
 
     // ================================
     // RESPONSE
@@ -1817,40 +1781,40 @@ app.get("/api/stats/:userId", async (req, res) => {
         target_weight: targetWeight,
         weight_lost: Number(weightLost.toFixed(1)),
         progress_percent: Math.min(Math.round(progressPercent), 100),
-        weeks_to_goal: weeksToGoal
+        weeks_to_goal: weeksToGoal,
       },
       weekly_charts: {
         calories: weeklyCalories,
         workouts: weeklyWorkouts,
         water: weeklyWater,
-        labels
+        labels,
       },
       quick_stats: {
-        workout_days: workoutDays,
+        workout_days: workoutDaysCount,
         rest_days: restDays,
         total_calories_burned: Math.round(totalCaloriesBurned),
-        total_water_liters: totalWater
+        total_water_liters: totalWater,
       },
       streaks: {
         workout_streak: workoutStreak,
         water_streak: waterStreak,
-        food_log_streak: foodStreak
+        food_log_streak: foodStreak,
       },
       top_exercises: topExercises.map(e => ({
         name: e.exercise_name,
-        sets: Number(e.total_sets)
+        sets: Number(e.total_sets),
       })),
       total_stats: {
         total_active_minutes: Number(totalStats[0]?.total_minutes || 0),
-        total_calories_burned: Number(totalStats[0]?.total_calories || 0)
-      }
+        total_calories_burned: Number(totalStats[0]?.total_calories || 0),
+      },
     });
 
   } catch (error) {
-    console.error("❌ FULL ERROR:", error);
+    console.error("❌ Stats API error:", error);
     res.status(500).json({
       error: "Failed to get stats data",
-      details: error.message
+      details: error.message,
     });
   }
 });
