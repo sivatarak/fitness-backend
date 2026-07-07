@@ -1819,6 +1819,109 @@ app.get("/api/stats/:userId", async (req, res) => {
   }
 });
 
+
+// routes/mealReminders.js (Node.js/Express)
+
+// Save/update meal schedule
+router.post('/meal-schedule', authenticateUser, async (req, res) => {
+  const { userId, schedule } = req.body;
+  
+  // Upsert schedule for user
+  await db.query(`
+    INSERT INTO meal_schedules (user_id, meal_type, scheduled_hour, scheduled_minute, reminder_hour, reminder_minute, is_active)
+    VALUES ($1, $2, $3, $4, $5, $6, true)
+    ON CONFLICT (user_id, meal_type) 
+    DO UPDATE SET 
+      scheduled_hour = EXCLUDED.scheduled_hour,
+      scheduled_minute = EXCLUDED.scheduled_minute,
+      reminder_hour = EXCLUDED.reminder_hour,
+      reminder_minute = EXCLUDED.reminder_minute,
+      updated_at = NOW()
+  `, [userId, schedule.mealType, schedule.scheduledHour, schedule.scheduledMinute, 
+      schedule.reminderHour, schedule.reminderMinute]);
+
+  res.json({ success: true });
+});
+
+// Get user's meal schedule
+router.get('/meal-schedule/:userId', authenticateUser, async (req, res) => {
+  const { userId } = req.params;
+  const rows = await db.query(
+    'SELECT * FROM meal_schedules WHERE user_id = $1 AND is_active = true',
+    [userId]
+  );
+  res.json({ schedule: rows.rows });
+});
+
+// Get smart suggestions based on logging history
+router.get('/meal-suggestions/:userId', authenticateUser, async (req, res) => {
+  const { userId } = req.params;
+
+  // Analyze last 30 days of food logs
+  const patterns = await db.query(`
+    SELECT 
+      meal_type,
+      food_name,
+      AVG(calories) as avg_calories,
+      AVG(protein) as avg_protein,
+      AVG(carbs) as avg_carbs,
+      AVG(fat) as avg_fat,
+      COUNT(*) as frequency,
+      AVG(EXTRACT(HOUR FROM logged_at)) as avg_log_hour,
+      AVG(quantity) as avg_quantity
+    FROM food_logs
+    WHERE user_id = $1 
+      AND logged_at >= NOW() - INTERVAL '30 days'
+    GROUP BY meal_type, food_name
+    ORDER BY meal_type, frequency DESC
+  `, [userId]);
+
+  // Missed meals analysis
+  const missedMeals = await db.query(`
+    SELECT 
+      meal_type,
+      COUNT(*) as missed_count,
+      AVG(EXTRACT(HOUR FROM reminder_sent_at)) as avg_reminder_hour
+    FROM meal_reminders_log
+    WHERE user_id = $1
+      AND was_logged = false
+      AND reminder_sent_at >= NOW() - INTERVAL '30 days'
+    GROUP BY meal_type
+  `, [userId]);
+
+  // Streak data
+  const streaks = await db.query(`
+    SELECT 
+      meal_type,
+      COUNT(DISTINCT DATE(logged_at)) as logged_days
+    FROM food_logs
+    WHERE user_id = $1
+      AND logged_at >= NOW() - INTERVAL '7 days'
+    GROUP BY meal_type
+  `, [userId]);
+
+  res.json({
+    patterns: patterns.rows,
+    missedMeals: missedMeals.rows,
+    streaks: streaks.rows,
+  });
+});
+
+// Log reminder event (sent/dismissed/logged)
+router.post('/meal-reminder-log', authenticateUser, async (req, res) => {
+  const { userId, mealType, action, reminderSentAt } = req.body;
+  // action: 'sent' | 'dismissed' | 'logged_after_reminder'
+
+  await db.query(`
+    INSERT INTO meal_reminders_log 
+      (user_id, meal_type, action, reminder_sent_at, was_logged)
+    VALUES ($1, $2, $3, $4, $5)
+  `, [userId, mealType, action, reminderSentAt, action === 'logged_after_reminder']);
+
+  res.json({ success: true });
+});
+
+
 //history api's
 
 // ================================
