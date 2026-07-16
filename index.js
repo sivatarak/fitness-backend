@@ -673,7 +673,7 @@ app.get("/api/exercises/:id", async (req, res) => {
 // ================================
 app.post("/api/workouts", async (req, res) => {
   try {
-    const { userId, exerciseId, exerciseName, sets, durationMinutes, notes } = req.body;
+    const { userId, exerciseId, exerciseName, sets, durationMinutes, notes, caloriesBurned } = req.body;
 
     if (!userId || !exerciseId || !sets) {
       return res.status(400).json({ error: "userId, exerciseId, and sets required" });
@@ -689,10 +689,10 @@ app.post("/api/workouts", async (req, res) => {
     const result = await sql`
       INSERT INTO workouts (
         user_id, exercise_id, exercise_name, sets, 
-        duration_minutes, total_volume, total_reps, notes, completed_at
+        duration_minutes, total_volume, total_reps, notes, calories_burned, completed_at
       ) VALUES (
         ${userId}, ${exerciseId}, ${exerciseName}, ${JSON.stringify(sets)},
-        ${durationMinutes || 0}, ${totalVolume}, ${totalReps}, ${notes || ''}, NOW()
+        ${durationMinutes || 0}, ${totalVolume}, ${totalReps}, ${notes || ''}, ${caloriesBurned || 0}, NOW()
       )
       RETURNING *
     `;
