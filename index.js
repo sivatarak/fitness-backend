@@ -1620,15 +1620,8 @@ app.get("/api/stats/:userId", async (req, res) => {
     const currentWeight = Number(profileData.weight);
     const targetWeight = Number(profileData.target_weight);
 
-    const weightLost = startWeight - currentWeight;
-    const totalToLose = startWeight - targetWeight;
-
-    const progressPercent = totalToLose > 0 ? (weightLost / totalToLose) * 100 : 0;
-    const remainingWeight = currentWeight - targetWeight;
-    const weeksToGoal = remainingWeight > 0 ? Math.ceil(remainingWeight / 0.5) : 0;
-
     // ================================
-    // FOOD
+    // FOOD / WORKOUT / WATER (current period)
     // ================================
     const foodData = await sql`
       SELECT date::text, SUM(calories * quantity) as total
@@ -1638,9 +1631,6 @@ app.get("/api/stats/:userId", async (req, res) => {
       GROUP BY date
     `;
 
-    // ================================
-    // WORKOUT
-    // ================================
     const workoutData = await sql`
       SELECT DATE(completed_at)::text as date, SUM(duration_minutes) as total
       FROM workouts
@@ -1649,9 +1639,6 @@ app.get("/api/stats/:userId", async (req, res) => {
       GROUP BY DATE(completed_at)
     `;
 
-    // ================================
-    // WATER — all queries together ✅
-    // ================================
     const waterLogsData = await sql`
       SELECT date::text, SUM(amount_ml) as total
       FROM water_logs
@@ -1668,7 +1655,7 @@ app.get("/api/stats/:userId", async (req, res) => {
     `;
 
     // ================================
-    // STREAK DATES
+    // STREAK DATES (unchanged — full history, not period-scoped)
     // ================================
     const workoutDates = await sql`
       SELECT DISTINCT DATE(completed_at)::text as date
@@ -1702,7 +1689,7 @@ app.get("/api/stats/:userId", async (req, res) => {
     `;
 
     // ================================
-    // TOTAL WORKOUT STATS
+    // TOTAL WORKOUT STATS — current period
     // ================================
     const totalStats = await sql`
       SELECT
@@ -1714,7 +1701,19 @@ app.get("/api/stats/:userId", async (req, res) => {
     `;
 
     // ================================
-    // BUILD MAPS
+    // TOTAL WORKOUT STATS — previous period (for comparison)
+    // Same length window immediately before the current one.
+    // ================================
+    const previousStats = await sql`
+      SELECT COALESCE(SUM(calories_burned), 0) as total_calories
+      FROM workouts
+      WHERE user_id = ${userId}
+      AND completed_at >= NOW() - (${daysAgo * 2} * INTERVAL '1 day')
+      AND completed_at <  NOW() - (${daysAgo} * INTERVAL '1 day')
+    `;
+
+    // ================================
+    // BUILD DAILY MAPS
     // ================================
     const foodMap = Object.fromEntries(
       foodData.map(d => [d.date, Number(d.total)])
@@ -1730,35 +1729,104 @@ app.get("/api/stats/:userId", async (req, res) => {
     const waterMap = { ...waterFromLogs, ...waterFromDaily }; // daily overwrites logs if both exist
 
     // ================================
-    // BUILD CHART ARRAYS
+    // WALK EVERY DAY IN THE WINDOW ONCE
+    // (gives us date-ordered arrays we can then bucket however the
+    //  period needs — daily / weekly / monthly)
     // ================================
-    const weeklyCalories = [];
-    const weeklyWorkouts = [];
-    const weeklyWater = [];
-    const labels = [];
+    const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const monthNames = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 
+    const days = []; // [{ dateStr, dateObj, calories, workoutMins, waterMl }]
     for (let i = daysAgo - 1; i >= 0; i--) {
       const d = new Date();
       d.setDate(d.getDate() - i);
       const dateStr = d.toISOString().split("T")[0];
-      const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-
-      labels.push(dayNames[d.getDay()]);
-      weeklyCalories.push(foodMap[dateStr] || 0);
-      weeklyWorkouts.push(workoutMap[dateStr] || 0);
-      weeklyWater.push(Number(((waterMap[dateStr] || 0) / 1000).toFixed(1)));
+      days.push({
+        dateStr,
+        dateObj: d,
+        calories: foodMap[dateStr] || 0,
+        workoutMins: workoutMap[dateStr] || 0,
+        waterMl: waterMap[dateStr] || 0,
+      });
     }
 
     // ================================
-    // QUICK STATS
+    // BUCKET INTO CHART DATA BASED ON PERIOD
     // ================================
-    const workoutDaysCount = weeklyWorkouts.filter(v => v > 0).length;
-    const restDays = daysAgo - workoutDaysCount;
-    const totalCaloriesBurned = weeklyWorkouts.reduce((sum, mins) => sum + mins * 6, 0);
-    const totalWater = Number(weeklyWater.reduce((a, b) => a + b, 0).toFixed(1));
+    let labels = [];
+    let calories_consumed = [];
+    let workout_minutes = [];
+    let water_liters = [];
+
+    if (period === "week") {
+      // one point per day
+      for (const d of days) {
+        labels.push(dayNames[d.dateObj.getDay()]);
+        calories_consumed.push(d.calories);
+        workout_minutes.push(d.workoutMins);
+        water_liters.push(Number((d.waterMl / 1000).toFixed(1)));
+      }
+    } else if (period === "month") {
+      // ~5 weekly buckets (7-day chunks, oldest first; last chunk may be short)
+      const chunkSize = 7;
+      let weekIndex = 1;
+      for (let i = 0; i < days.length; i += chunkSize) {
+        const chunk = days.slice(i, i + chunkSize);
+        labels.push(`W${weekIndex}`);
+        calories_consumed.push(chunk.reduce((sum, d) => sum + d.calories, 0));
+        workout_minutes.push(chunk.reduce((sum, d) => sum + d.workoutMins, 0));
+        water_liters.push(
+          Number((chunk.reduce((sum, d) => sum + d.waterMl, 0) / 1000).toFixed(1))
+        );
+        weekIndex++;
+      }
+    } else if (period === "year") {
+      // 12 calendar-month buckets, oldest to newest
+      const buckets = new Map(); // "YYYY-M" -> { calories, workoutMins, waterMl, label }
+      for (const d of days) {
+        const key = `${d.dateObj.getFullYear()}-${d.dateObj.getMonth()}`;
+        if (!buckets.has(key)) {
+          buckets.set(key, {
+            calories: 0,
+            workoutMins: 0,
+            waterMl: 0,
+            label: monthNames[d.dateObj.getMonth()],
+          });
+        }
+        const bucket = buckets.get(key);
+        bucket.calories += d.calories;
+        bucket.workoutMins += d.workoutMins;
+        bucket.waterMl += d.waterMl;
+      }
+      for (const bucket of buckets.values()) {
+        labels.push(bucket.label);
+        calories_consumed.push(bucket.calories);
+        workout_minutes.push(bucket.workoutMins);
+        water_liters.push(Number((bucket.waterMl / 1000).toFixed(1)));
+      }
+    }
 
     // ================================
-    // STREAKS
+    // QUICK STATS (whole period, not just the last bucket)
+    // ================================
+    const workoutDaysCount = days.filter(d => d.workoutMins > 0).length;
+    const restDays = daysAgo - workoutDaysCount;
+    const totalCaloriesBurned = Number(totalStats[0]?.total_calories || 0);
+    const totalWaterLiters = Number(
+      (days.reduce((sum, d) => sum + d.waterMl, 0) / 1000).toFixed(1)
+    );
+
+    // ================================
+    // COMPARISON — % change in calories burned vs previous equal period
+    // ================================
+    const currentCaloriesBurned = totalCaloriesBurned;
+    const prevCaloriesBurned = Number(previousStats[0]?.total_calories || 0);
+    const changePercent = prevCaloriesBurned > 0
+      ? Math.round(((currentCaloriesBurned - prevCaloriesBurned) / prevCaloriesBurned) * 100)
+      : 0;
+
+    // ================================
+    // STREAKS (unchanged)
     // ================================
     const schedule = profileData.workout_schedule || ["Mon", "Tue", "Wed", "Thu", "Fri"];
 
@@ -1775,38 +1843,37 @@ app.get("/api/stats/:userId", async (req, res) => {
     // ================================
     res.json({
       period,
-      weight_progress: {
-        start_weight: Number(startWeight.toFixed(1)),
-        current_weight: currentWeight,
-        target_weight: targetWeight,
-        weight_lost: Number(weightLost.toFixed(1)),
-        progress_percent: Math.min(Math.round(progressPercent), 100),
-        weeks_to_goal: weeksToGoal,
-      },
-      weekly_charts: {
-        calories: weeklyCalories,
-        workouts: weeklyWorkouts,
-        water: weeklyWater,
+      chart_data: {
         labels,
+        calories_consumed,
+        workout_minutes,
+        water_liters,
       },
       quick_stats: {
         workout_days: workoutDaysCount,
         rest_days: restDays,
-        total_calories_burned: Math.round(totalCaloriesBurned),
-        total_water_liters: totalWater,
+        total_calories_burned: totalCaloriesBurned,
+        total_water_liters: totalWaterLiters,
       },
-      streaks: {
-        workout_streak: workoutStreak,
-        water_streak: waterStreak,
-        food_log_streak: foodStreak,
+      weight_progress: {
+        start_weight: Number(startWeight.toFixed(1)),
+        current_weight: currentWeight,
+        target_weight: targetWeight,
       },
       top_exercises: topExercises.map(e => ({
         name: e.exercise_name,
         sets: Number(e.total_sets),
       })),
+      streaks: {
+        workout_streak: workoutStreak,
+        water_streak: waterStreak,
+        food_log_streak: foodStreak,
+      },
       total_stats: {
         total_active_minutes: Number(totalStats[0]?.total_minutes || 0),
-        total_calories_burned: Number(totalStats[0]?.total_calories || 0),
+      },
+      comparison: {
+        change_percent: changePercent,
       },
     });
 
