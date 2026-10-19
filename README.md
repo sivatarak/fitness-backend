@@ -114,19 +114,35 @@ vercel
 
 ```
 /
-├── index.js                    # Main Express app
+├── index.js                         # Node/Vercel entry point
+├── src/
+│   ├── app.js                        # Express setup and middleware
+│   ├── routes/
+│   │   ├── api.routes.js             # API router composition
+│   │   └── *.routes.js               # Feature endpoint definitions
+│   ├── controllers/
+│   │   └── *.controller.js           # Request handling by feature
+│   ├── services/
+│   │   └── food-search.service.js    # Food provider and translation integrations
+│   └── utils/
+│       └── streaks.js                # Shared streak calculations
 ├── api/
-│   └── db.js                   # Database connection
-├── package.json                # Dependencies
-├── vercel.json                 # Vercel config
-├── .env.example                # Environment template
-├── database-schema.sql         # Database tables
-├── met-values-assignment.sql   # MET values
-├── import-exercises.js         # Exercise importer
-├── youtube-bulk-fetch.js       # Video fetcher
-├── DEPLOYMENT-GUIDE.md         # Deployment steps
-└── README.md                   # This file
+│   └── db.js                         # Neon database connection
+├── database-schema.sql
+├── met-values-assignment.sql
+├── import-exercises.js
+├── youtube-bulk-fetch.js
+├── package.json
+└── vercel.json
 ```
+
+### Request flow
+
+Requests pass from `src/app.js` through a feature router to its controller.
+Controllers coordinate request validation and responses, use shared services
+for external integrations, and access PostgreSQL through the existing Neon
+connection in `api/db.js`. The root `index.js` starts the local server when run
+directly and exports the Express app for Vercel.
 
 ---
 
@@ -135,7 +151,7 @@ vercel
 ### Food
 - `GET /api/food/search?q=banana` - Search food
 - `POST /api/food/log` - Log food entry
-- `GET /api/food/logs?userId=xxx` - Get today's logs
+- `GET /api/food/logs/:userId` - Get today's logs
 
 ### Exercises
 - `GET /api/exercises` - Get all exercises
@@ -144,16 +160,17 @@ vercel
 
 ### Workouts
 - `POST /api/workouts` - Log workout
-- `GET /api/workouts?userId=xxx` - Get workout history
+- `GET /api/workouts/:userId` - Get workout history
 
 ### Tracking
 - `POST /api/weight` - Log weight
-- `GET /api/weight/history?userId=xxx` - Weight chart
+- `GET /api/weight/:userId` - Weight history
 - `POST /api/water` - Log water
-- `GET /api/water/today?userId=xxx` - Today's water
+- `GET /api/water/:userId` - Today's water
 
 ### Analytics
-- `GET /api/dashboard?userId=xxx` - Complete dashboard data
+- `GET /api/dashboard/:userId` - Complete dashboard data
+- `GET /api/stats/:userId` - Period statistics and streaks
 
 ---
 
